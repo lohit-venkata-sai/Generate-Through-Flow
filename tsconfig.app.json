@@ -30,7 +30,6 @@
         "./src/*"
       ]
     },
-    "baseUrl": ".",
   },
   "include": [
     "src"
