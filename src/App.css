@@ -127,4 +127,87 @@
   html {
     @apply font-sans;
     }
+  body {
+    min-width: 320px;
+  }
+}
+
+.prompt-textarea {
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 48%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.prompt-textarea::-webkit-scrollbar {
+  width: 10px;
+}
+
+.prompt-textarea::-webkit-scrollbar-track {
+  margin: 8px 0;
+  background: transparent;
+}
+
+.prompt-textarea::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: color-mix(in oklch, var(--muted-foreground) 48%, transparent);
+}
+
+.prompt-textarea::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
+}
+
+@keyframes generated-prompt-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  60% { opacity: 1; transform: translateY(-1px); }
+  100% { transform: translateY(0); }
+}
+
+.generated-prompt {
+  animation: generated-prompt-in 320ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generated-prompt { animation: none; }
+}
+
+.prompt-textarea {
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 48%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.prompt-textarea::-webkit-scrollbar {
+  width: 10px;
+}
+
+.prompt-textarea::-webkit-scrollbar-track {
+  margin: 8px 0;
+  background: transparent;
+}
+
+.prompt-textarea::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: color-mix(in oklch, var(--muted-foreground) 48%, transparent);
+}
+
+.prompt-textarea::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
+}
+
+@keyframes generated-prompt-in {
+  0% { opacity: 0; transform: translateY(8px); }
+  60% { opacity: 1; transform: translateY(-1px); }
+  100% { transform: translateY(0); }
+}
+
+.generated-prompt {
+  animation: generated-prompt-in 320ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .generated-prompt { animation: none; }
 }
