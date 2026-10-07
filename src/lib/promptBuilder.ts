@@ -155,6 +155,8 @@ The final filename verification must happen ONCE, at the very end.
 
 GLOBAL GENERATION SETTINGS
 
+Configure the image settings to following,
+
 Generate exactly ${imageCount} images for each prompt.
 
 - Model: ${model}

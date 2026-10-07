@@ -19,6 +19,11 @@ export function parsePrompts(value: string, separator: PromptSeparator) {
                 .split(/\n(?=\d+[.)]\s*)/)
                 .map((prompt) => prompt.replace(/^\d+[.)]\s*/, "").trim())
                 .filter(Boolean);
+        case "dashes":
+            return value
+                .split(/^\s*-{3,}\s*$/m)
+                .map((prompt) => prompt.trim())
+                .filter(Boolean);
         default:
             return [value.trim()];
     }
