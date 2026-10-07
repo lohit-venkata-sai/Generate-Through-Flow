@@ -4,7 +4,8 @@ import type { ActivePlan, DailyUsage } from "../types";
 
 const URL_KEY = "flowpilot-server-url";
 
-export const DEFAULT_SERVER_URL = "http://localhost:3001";
+export const DEFAULT_SERVER_URL =
+  import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
 
 function norm(base: string): string {
   return (base || "").trim().replace(/\/+$/, "") || DEFAULT_SERVER_URL;
