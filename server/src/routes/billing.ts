@@ -102,6 +102,20 @@ billingRouter.post("/webhook", express.raw({ type: "*/*" }), async (req, res) =>
         return;
       }
       const profile = await readProfile(original.sub);
+      // Another surviving payment for the same plan still covers the user
+      // (e.g. double-paid, one refunded) — revoke only the last cover.
+      const { data: sibling } = await sb
+        .from("billing_events")
+        .select("event_key")
+        .eq("sub", original.sub)
+        .eq("plan_id", original.plan_id)
+        .neq("event_key", `payment.succeeded:${refundPaymentId}`)
+        .limit(1)
+        .maybeSingle();
+      if (sibling) {
+        res.json({ received: true, revoked: null, covered: true });
+        return;
+      }
       if (PLAN_KIND[original.plan_id as PaidPlanId] === "base" && profile.base === original.plan_id) {
         await sb.from("profiles").update({ base_plan: "free" }).eq("sub", original.sub);
       }

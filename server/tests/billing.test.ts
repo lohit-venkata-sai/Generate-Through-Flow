@@ -10,11 +10,12 @@ const SUB_BASE = "__vitest_dodo_base__";
 const SUB_PASS = "__vitest_dodo_pass__";
 const SUB_REFUND_A = "__vitest_dodo_refa__";
 const SUB_REFUND_B = "__vitest_dodo_refb__";
+const SUB_REFUND_C = "__vitest_dodo_refc__";
 
 afterAll(async () => {
   const sb = getSupabase();
   if (sb) {
-    for (const sub of [SUB_BASE, SUB_PASS, SUB_REFUND_A, SUB_REFUND_B]) {
+    for (const sub of [SUB_BASE, SUB_PASS, SUB_REFUND_A, SUB_REFUND_B, SUB_REFUND_C]) {
       await sb.from("billing_events").delete().eq("sub", sub);
       await sb.from("daily_usage").delete().eq("sub", sub);
       await sb.from("profiles").delete().eq("sub", sub);
@@ -126,8 +127,21 @@ describe("webhook", () => {
       payment_id: "pay_refund_case2b", metadata: { sub: SUB_REFUND_B, plan_id: "p5", kind: "buy" },
     }, "msg_pay_case2b");
     await sign("refund.succeeded", { payment_id: "pay_refund_case2a" }, "msg_refund_case2");
+    await sign("refund.succeeded", { payment_id: "pay_refund_case2a" }, "msg_refund_case2");
     const untouched = await request(app).get(`/api/billing/profile/${SUB_REFUND_B}`);
     expect(untouched.body.base).toBe("p5");
+    // Case 3: double-paid p4, refund one → the other still covers it.
+    await sign("payment.succeeded", {
+      payment_id: "pay_refund_case3a", metadata: { sub: SUB_REFUND_C, plan_id: "p4", kind: "buy" },
+    }, "msg_pay_case3a");
+    await sign("payment.succeeded", {
+      payment_id: "pay_refund_case3b", metadata: { sub: SUB_REFUND_C, plan_id: "p4", kind: "buy" },
+    }, "msg_pay_case3b");
+    const partialRefund = await sign("refund.succeeded", { payment_id: "pay_refund_case3a" }, "msg_refund_case3");
+    expect(partialRefund.status).toBe(200);
+    expect(partialRefund.body.covered).toBe(true);
+    const stillCovered = await request(app).get(`/api/billing/profile/${SUB_REFUND_C}`);
+    expect(stillCovered.body.base).toBe("p4");
   });
 
   it("applies base upgrades and passes, idempotently", async () => {
