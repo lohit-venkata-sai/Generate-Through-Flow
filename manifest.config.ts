@@ -28,11 +28,20 @@ export default defineManifest({
     },
 
 
-    permissions: ["sidePanel", "storage"],
+    permissions: ["sidePanel", "storage", "scripting", "tabs", "downloads", "notifications", "identity"],
 
     side_panel: {
         default_path: "index.html"
     },
+
+    content_scripts: [
+        {
+            matches: ["https://flow.google.com/*"],
+            js: ["src/recapCapture.ts"],
+            run_at: "document_start",
+            world: "MAIN",
+        },
+    ],
     background: {
         service_worker: "src/background.ts",
         type: "module",
