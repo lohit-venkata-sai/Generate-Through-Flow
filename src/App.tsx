@@ -11,6 +11,7 @@ import { SettingsView } from './components/SettingsView'
 import { SetupView } from './components/SetupView'
 import { TourOverlay } from './components/TourOverlay'
 import { signOut } from './lib/auth'
+import { loadServerUrl, serverConsume, serverGetUsage, serverVerify } from './lib/server'
 import { defaultBatchName, defaultPrefs, effectiveLimit, loadHistory, loadPlan, loadPrefs, loadPresets, loadSession, loadUsage, migratePlan, ONE_YR_MS, PASS_RENEW_DAYS, saveHistory, savePlan, savePrefs, savePresets, saveUsage, SIX_MO_MS, tierDiff, todayKey, uid } from './lib/store'
 import type { ActivePlan, AppView, AutomationPrefs, BatchRecord, DailyUsage, FormValues, GoogleSession, LogEntry, LogLevel, Mode, QueueItem, SavedPreset } from './types'
 
@@ -158,7 +159,30 @@ function App() {
       saveUsage(next).catch(() => undefined);
       return next;
     });
+    // Mirror to the server best-effort (local stays authoritative offline).
+    const sub = session?.sub;
+    if (sub) {
+      void (async () => {
+        const base = await loadServerUrl();
+        await serverConsume(base, sub, images);
+      })();
+    }
   };
+
+  // Once signed in, verify with the server (upserts profile) and prefer
+  // server-side usage when reachable. Local storage remains the fallback.
+  const sessionSub = session?.sub;
+  const sessionToken = session?.accessToken;
+  useEffect(() => {
+    if (!sessionChecked || !sessionSub) return;
+    void (async () => {
+      const base = await loadServerUrl();
+      if (sessionToken) void serverVerify(base, sessionToken);
+      const remote = await serverGetUsage(base, sessionSub);
+      if (remote && remote.date === todayKey()) setUsage(remote);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionChecked, sessionSub]);
 
   const activePlan = plan;
   const dailyLimit = effectiveLimit(activePlan);

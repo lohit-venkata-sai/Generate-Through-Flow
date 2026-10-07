@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Bell, BookmarkPlus, Download, FolderPen, History, Play, Trash2, Upload } from "lucide-react";
 import { checkFlowConnection } from "../lib/runQueue";
+import { loadServerUrl, saveServerUrl, serverHealth } from "../lib/server";
 import { savePresets, uid } from "../lib/store";
 import type { AutomationPrefs, FormValues, SavedPreset } from "../types";
 
@@ -37,6 +38,12 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
     const [diag, setDiag] = useState<string | null>(null);
     const [diagBusy, setDiagBusy] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
+    const [serverUrl, setServerUrl] = useState("");
+    const [serverStatus, setServerStatus] = useState<string | null>(null);
+    const [serverBusy, setServerBusy] = useState(false);
+    useEffect(() => {
+        loadServerUrl().then(setServerUrl).catch(() => undefined);
+    }, []);
     const set = (patch: Partial<FormValues>) => setFormValues((p) => ({ ...p, ...patch }));
     const setP = (patch: Partial<AutomationPrefs>) => setPrefs((p) => ({ ...p, ...patch }));
 
@@ -69,6 +76,19 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
             setDiag("Diagnostics failed.");
         } finally {
             setDiagBusy(false);
+        }
+    };
+
+    const testServer = async () => {
+        setServerBusy(true);
+        try {
+            await saveServerUrl(serverUrl);
+            const res = await serverHealth(serverUrl);
+            setServerStatus(res?.ok ? "Server reachable." : "Server unreachable — using local data.");
+        } catch {
+            setServerStatus("Server unreachable — using local data.");
+        } finally {
+            setServerBusy(false);
         }
     };
 
@@ -333,6 +353,26 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
                         {diagBusy ? "Checking…" : "Check Flow connection"}
                     </button>
                     {diag && <p className="rounded-xl bg-muted/60 px-3 py-2 text-[11px]">{diag}</p>}
+
+                    <h2 className="pt-1 text-sm font-semibold">Server</h2>
+                    <input
+                        value={serverUrl}
+                        onChange={(e) => setServerUrl(e.target.value)}
+                        onBlur={() => { void saveServerUrl(serverUrl); }}
+                        placeholder="http://localhost:3001"
+                        aria-label="Server URL"
+                        spellCheck={false}
+                        className="h-10 w-full rounded-xl border bg-background px-3 font-mono text-xs outline-none"
+                    />
+                    <button
+                        type="button"
+                        onClick={testServer}
+                        disabled={serverBusy}
+                        className="h-10 w-full rounded-xl border text-xs font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                        {serverBusy ? "Testing…" : "Save & test server"}
+                    </button>
+                    {serverStatus && <p className="rounded-xl bg-muted/60 px-3 py-2 text-[11px]">{serverStatus}</p>}
 
                     <h2 className="pt-1 text-sm font-semibold">Cache</h2>
                     <button type="button" onClick={clearCache} className="h-10 w-full rounded-xl border text-xs font-medium hover:bg-accent">
