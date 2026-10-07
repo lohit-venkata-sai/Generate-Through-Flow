@@ -1,6 +1,6 @@
--- FlowPilot Supabase schema. Run in Supabase SQL editor.
--- Tables: profiles (one row per Google sub), daily_usage (one row per sub+date),
--- billing_events (webhook idempotency, one row per Razorpay payment event).
+-- Initial schema (baseline). Tables: profiles (one row per Google sub),
+-- daily_usage (one row per sub+date), billing_events (webhook idempotency,
+-- one row per payment event). Idempotent: safe to re-run.
 
 create table if not exists public.profiles (
   sub text primary key,
