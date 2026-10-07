@@ -1,12 +1,13 @@
-import crypto from "node:crypto";
+import { Webhook } from "standardwebhooks";
 import { afterAll, describe, expect, it } from "vitest";
-import "./env.js";
 import request from "supertest";
+import "./env.js";
 import { app } from "../src/app.js";
+import { productFor } from "../src/lib/billing.js";
 import { getSupabase } from "../src/lib/supabase.js";
 
-const SUB_BASE = "__vitest_bill_base__";
-const SUB_PASS = "__vitest_bill_pass__";
+const SUB_BASE = "__vitest_dodo_base__";
+const SUB_PASS = "__vitest_dodo_pass__";
 
 afterAll(async () => {
   const sb = getSupabase();
@@ -44,42 +45,69 @@ describe("GET /api/billing/profile/:sub", () => {
   });
 });
 
+describe("productFor (upgrade mapping)", () => {
+  it("charges only the difference for paid base moves", () => {
+    expect(productFor("p4", "buy", "p3")).toBe("pdt_0NpCuaqcNyzLOIv4saHhI");
+    expect(productFor("p5", "buy", "p3")).toBe("pdt_0NpCuaqrSaD10bs3BFmx3");
+    expect(productFor("p5", "buy", "p4")).toBe("pdt_0NpCuarQymP2d1VC2OSRU");
+  });
+
+  it("charges full price from free and for passes", () => {
+    expect(productFor("p4", "buy", "free")).toBe("pdt_0NpCuaqlRIYSdhmpXtcIM");
+    expect(productFor("p7", "buy", "free")).toBe("pdt_0NpCuaow6xfNQMLfRUAqw");
+  });
+
+  it("uses the renew product for renewals", () => {
+    expect(productFor("p7", "renew", "free")).toBe("pdt_0NpCuarDOXniQEB3rmEZH");
+    expect(productFor("p10", "renew", "p7")).toBe("pdt_0NpCuarDOXniQEB3rmEZH");
+  });
+});
+
 describe("webhook", () => {
-  it("400s without a signature", async () => {
-    const res = await request(app).post("/api/billing/webhook").send({ event: "payment_link.paid" });
+  it("400s without signature headers", async () => {
+    const res = await request(app).post("/api/billing/webhook").send({ type: "payment.succeeded" });
     expect(res.status).toBe(400);
   });
 
   it("applies base upgrades and passes, idempotently", async () => {
     if (!getSupabase()) return;
-    process.env.RAZORPAY_WEBHOOK_SECRET = "vitest-webhook-secret";
-    const send = async (sub: string, planId: string) => {
+    // Standard Webhooks secrets are base64-encoded.
+    const secret = Buffer.from("vitest-webhook-secret-32bytes!").toString("base64");
+    process.env.DODO_PAYMENTS_WEBHOOK_KEY = secret;
+    const send = async (sub: string, planId: string, paymentId: string) => {
       const payload = {
-        event: "payment_link.paid",
-        payload: {
-          payment_link: { entity: { id: `plink_${sub}`, notes: { sub, plan_id: planId, kind: "buy" } } },
-          payment: { entity: { id: `pay_${sub}` } },
+        business_id: "biz_test",
+        timestamp: new Date().toISOString(),
+        type: "payment.succeeded",
+        data: {
+          payload_type: "Payment",
+          payment_id: paymentId,
+          metadata: { sub, plan_id: planId, kind: "buy" },
         },
       };
       const raw = JSON.stringify(payload);
-      const sig = crypto.createHmac("sha256", "vitest-webhook-secret").update(raw).digest("hex");
+      const id = `msg_${paymentId}`;
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signature = new Webhook(secret).sign(id, new Date(Number(timestamp) * 1000), raw);
       return request(app)
         .post("/api/billing/webhook")
         .set("Content-Type", "application/json")
-        .set("x-razorpay-signature", sig)
+        .set("webhook-id", id)
+        .set("webhook-signature", signature)
+        .set("webhook-timestamp", timestamp)
         .send(raw);
     };
 
-    const base = await send(SUB_BASE, "p4");
+    const base = await send(SUB_BASE, "p4", "pay_test_base_1");
     expect(base.status).toBe(200);
     expect(base.body.plan.base).toBe("p4");
 
     // Retry of the same payment must not double-apply.
-    const dup = await send(SUB_BASE, "p4");
+    const dup = await send(SUB_BASE, "p4", "pay_test_base_1");
     expect(dup.status).toBe(200);
     expect(dup.body.duplicate).toBe(true);
 
-    const pass = await send(SUB_PASS, "p7");
+    const pass = await send(SUB_PASS, "p7", "pay_test_pass_1");
     expect(pass.status).toBe(200);
     expect(pass.body.plan.pass?.id).toBe("p7");
     expect(pass.body.plan.pass.expiresAt).toBeGreaterThan(Date.now());

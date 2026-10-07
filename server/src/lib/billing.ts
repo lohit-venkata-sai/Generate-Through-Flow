@@ -1,17 +1,17 @@
-import crypto from "node:crypto";
-import Razorpay from "razorpay";
+import DodoPayments from "dodopayments";
+import { Webhook } from "standardwebhooks";
 import { getSupabase, requireSupabase } from "./supabase.js";
 
 export type PaidPlanId = "p3" | "p4" | "p5" | "p7" | "p10";
 export type CheckoutKind = "buy" | "renew";
+export type BasePlan = "free" | "p3" | "p4" | "p5";
 
-export const PAID_PLANS: Record<PaidPlanId, { amount: number; label: string; kind: "base" | "pass" }> = {
-  // amount = smallest currency unit (cents for USD, paise for INR).
-  p3: { amount: 300, label: "Starter lifetime · 100 images/day", kind: "base" },
-  p4: { amount: 400, label: "Plus lifetime · 300 images/day", kind: "base" },
-  p5: { amount: 500, label: "Pro lifetime · 500 images/day", kind: "base" },
-  p7: { amount: 700, label: "Unlimited pass · 6 months", kind: "pass" },
-  p10: { amount: 1000, label: "Unlimited pass · 1 year", kind: "pass" },
+export const PLAN_KIND: Record<PaidPlanId, "base" | "pass"> = {
+  p3: "base",
+  p4: "base",
+  p5: "base",
+  p7: "pass",
+  p10: "pass",
 };
 
 const PASS_MS: Record<string, number> = {
@@ -21,32 +21,71 @@ const PASS_MS: Record<string, number> = {
 
 const BASE_PRICE: Record<string, number> = { free: 0, p3: 3, p4: 4, p5: 5 };
 
+// Dodo product ids. Defaults are the dashboard products created for this
+// project; env vars allow overriding without a code change.
+const DEFAULT_PRODUCTS: Record<string, string> = {
+  p3: "pdt_0NpCuaqmC3cAjxNMrn1aJ",
+  p4: "pdt_0NpCuaqlRIYSdhmpXtcIM",
+  p5: "pdt_0NpCuaqd8KcSlkXXlDrun",
+  p7: "pdt_0NpCuaow6xfNQMLfRUAqw",
+  p10: "pdt_0NpCuapq0i1xtyLvg7e1v",
+  "p3-to-p4": "pdt_0NpCuaqcNyzLOIv4saHhI",
+  "p3-to-p5": "pdt_0NpCuaqrSaD10bs3BFmx3",
+  "p4-to-p5": "pdt_0NpCuarQymP2d1VC2OSRU",
+  "renew-6mo": "pdt_0NpCuarDOXniQEB3rmEZH",
+};
+
+const PRODUCT_ENV: Record<string, string> = {
+  p3: "DODO_PRODUCT_P3",
+  p4: "DODO_PRODUCT_P4",
+  p5: "DODO_PRODUCT_P5",
+  p7: "DODO_PRODUCT_P7",
+  p10: "DODO_PRODUCT_P10",
+  "p3-to-p4": "DODO_PRODUCT_P3_TO_P4",
+  "p3-to-p5": "DODO_PRODUCT_P3_TO_P5",
+  "p4-to-p5": "DODO_PRODUCT_P4_TO_P5",
+  "renew-6mo": "DODO_PRODUCT_RENEW_6MO",
+};
+
+function productId(key: string): string {
+  const envKey = PRODUCT_ENV[key];
+  return (envKey && process.env[envKey]) || DEFAULT_PRODUCTS[key] || "";
+}
+
+/** Pick the product to charge: upgrade products for paid-to-paid base moves
+ *  (pay only the difference), the renew product for pass renewals. */
+export function productFor(target: PaidPlanId, kind: CheckoutKind, currentBase: BasePlan): string {
+  if (kind === "renew") return productId("renew-6mo");
+  if (PLAN_KIND[target] === "base" && currentBase !== "free" && currentBase !== target) {
+    const upgrade = productId(`${currentBase}-to-${target}`);
+    if (upgrade) return upgrade;
+  }
+  return productId(target);
+}
+
 export function isPaidPlan(id: unknown): id is PaidPlanId {
-  return typeof id === "string" && id in PAID_PLANS;
+  return typeof id === "string" && (id as string) in PLAN_KIND;
 }
 
 export function billingConfigured(): boolean {
-  return Boolean(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET);
+  return Boolean(process.env.DODO_PAYMENTS_API_KEY);
 }
 
-export function billingCurrency(): string {
-  return process.env.BILLING_CURRENCY || "USD";
-}
+let cached: { key: string; client: DodoPayments } | null = null;
 
-let cached: { key: string; client: Razorpay } | null = null;
-
-export function razorpayClient(): Razorpay | null {
-  const id = process.env.RAZORPAY_KEY_ID || "";
-  const secret = process.env.RAZORPAY_KEY_SECRET || "";
-  if (!id || !secret) return null;
-  if (!cached || cached.key !== id + ":" + secret) {
-    cached = { key: id + ":" + secret, client: new Razorpay({ key_id: id, key_secret: secret }) };
+export function dodoClient(): DodoPayments | null {
+  const token = process.env.DODO_PAYMENTS_API_KEY || "";
+  if (!token) return null;
+  const env = process.env.DODO_PAYMENTS_ENV === "live_mode" ? "live_mode" : "test_mode";
+  const cacheKey = token + ":" + env;
+  if (!cached || cached.key !== cacheKey) {
+    cached = { key: cacheKey, client: new DodoPayments({ bearerToken: token, environment: env }) };
   }
   return cached.client;
 }
 
 export interface ServerPlan {
-  base: "free" | "p3" | "p4" | "p5";
+  base: BasePlan;
   pass: { id: "p7" | "p10"; startedAt: number; expiresAt: number } | null;
 }
 
@@ -61,16 +100,16 @@ export async function applyPaidPlan(sub: string, planId: PaidPlanId, kind: Check
     .eq("sub", sub)
     .maybeSingle();
 
-  const currentBase = (prof?.base_plan as ServerPlan["base"]) ?? "free";
+  const currentBase = ((prof?.base_plan as BasePlan) ?? "free");
   const now = Date.now();
 
-  if (PAID_PLANS[planId].kind === "base") {
+  if (PLAN_KIND[planId] === "base") {
     const nextBase = (BASE_PRICE[planId] ?? 0) > (BASE_PRICE[currentBase] ?? 0) ? planId : currentBase;
     if (nextBase !== currentBase) {
       await sb.from("profiles").update({ base_plan: nextBase }).eq("sub", sub);
     }
     return {
-      base: nextBase as ServerPlan["base"],
+      base: nextBase as BasePlan,
       pass: prof?.pass_id ? { id: prof.pass_id, startedAt: prof.pass_started_at ?? 0, expiresAt: prof.pass_expires_at ?? 0 } : null,
     };
   }
@@ -97,23 +136,37 @@ export async function readProfile(sub: string): Promise<ServerPlan> {
     .maybeSingle();
   if (!prof) return { base: "free", pass: null };
   return {
-    base: (prof.base_plan as ServerPlan["base"]) ?? "free",
+    base: ((prof.base_plan as BasePlan) ?? "free"),
     pass: prof.pass_id
       ? { id: prof.pass_id, startedAt: prof.pass_started_at ?? 0, expiresAt: prof.pass_expires_at ?? 0 }
       : null,
   };
 }
 
-/** Verify a Razorpay webhook signature (HMAC-SHA256 of the raw body). */
-export function verifyWebhookSignature(raw: Buffer, signature: string | undefined): boolean {
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET || "";
-  if (!secret || !signature) return false;
+export interface VerifiedEvent {
+  type: string;
+  data: unknown;
+}
+
+/** Verify a Dodo webhook (Standard Webhooks spec) and return the parsed event,
+ *  or null when the signature is missing/invalid. */
+export function verifyWebhook(
+  raw: Buffer,
+  headers: { id?: string; signature?: string; timestamp?: string },
+): VerifiedEvent | null {
+  const secret = process.env.DODO_PAYMENTS_WEBHOOK_KEY || "";
+  const { id, signature, timestamp } = headers;
+  if (!secret || !id || !signature || !timestamp) return null;
   try {
-    const expected = crypto.createHmac("sha256", secret).update(raw).digest("hex");
-    const a = Buffer.from(expected);
-    const b = Buffer.from(signature);
-    return a.length === b.length && crypto.timingSafeEqual(a, b);
+    const wh = new Webhook(secret);
+    const event = wh.verify(raw.toString("utf8"), {
+      "webhook-id": id,
+      "webhook-signature": signature,
+      "webhook-timestamp": timestamp,
+    }) as { type?: string; data?: unknown };
+    if (!event || typeof event.type !== "string") return null;
+    return { type: event.type, data: event.data };
   } catch {
-    return false;
+    return null;
   }
 }
