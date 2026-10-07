@@ -4,6 +4,7 @@ import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
 import { authRouter } from "./routes/auth.js";
+import { billingRouter } from "./routes/billing.js";
 import { healthRouter } from "./routes/health.js";
 import { plansRouter } from "./routes/plans.js";
 import { usageRouter } from "./routes/usage.js";
@@ -16,7 +17,13 @@ export const app = express();
 
 app.use(helmet());
 app.use(morgan("tiny"));
-app.use(express.json({ limit: "64kb" }));
+// The billing webhook needs the raw body for HMAC verification, so the
+// global json parser skips that path (the route parses raw itself).
+const json = express.json({ limit: "64kb" });
+app.use((req, res, next) => {
+  if (req.path === "/api/billing/webhook") next();
+  else json(req, res, next);
+});
 app.use(
   cors({
     // Chrome extensions send no Origin on some calls; allow requests with
@@ -32,6 +39,7 @@ app.use("/health", healthRouter);
 app.use("/api/plans", plansRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/usage", usageRouter);
+app.use("/api/billing", billingRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "not found" });

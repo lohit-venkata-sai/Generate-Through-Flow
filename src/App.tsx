@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Moon, Settings as SettingsIcon, Sparkles, Sun } from 'lucide-react'
 import './App.css'
 import { AgentView } from './components/AgentView'
@@ -11,8 +11,8 @@ import { SettingsView } from './components/SettingsView'
 import { SetupView } from './components/SetupView'
 import { TourOverlay } from './components/TourOverlay'
 import { signOut } from './lib/auth'
-import { loadServerUrl, serverConsume, serverGetUsage, serverVerify } from './lib/server'
-import { defaultBatchName, defaultPrefs, effectiveLimit, loadHistory, loadPlan, loadPrefs, loadPresets, loadSession, loadUsage, migratePlan, ONE_YR_MS, PASS_RENEW_DAYS, saveHistory, savePlan, savePrefs, savePresets, saveUsage, SIX_MO_MS, tierDiff, todayKey, uid } from './lib/store'
+import { loadServerUrl, serverCheckout, serverConsume, serverGetProfile, serverGetUsage, serverVerify, profileToPlan } from './lib/server'
+import { defaultBatchName, defaultPrefs, effectiveLimit, loadHistory, loadPlan, loadPrefs, loadPresets, loadSession, loadUsage, migratePlan, PASS_RENEW_DAYS, saveHistory, savePlan, savePrefs, savePresets, saveUsage, tierDiff, todayKey, uid } from './lib/store'
 import type { ActivePlan, AppView, AutomationPrefs, BatchRecord, DailyUsage, FormValues, GoogleSession, LogEntry, LogLevel, Mode, QueueItem, SavedPreset } from './types'
 
 const STORAGE_KEY = "flowpilot-form-values"
@@ -94,6 +94,10 @@ function App() {
     if (savedTheme === "light" || savedTheme === "dark") return savedTheme
     return "dark"
   })
+  const [billingBusy, setBillingBusy] = useState(false)
+  const [billingMsg, setBillingMsg] = useState<string | null>(null)
+  const planRef = useRef<ActivePlan>({ base: "free", pass: null })
+  planRef.current = plan
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark")
@@ -201,35 +205,65 @@ function App() {
     setView("main");
   };
 
+  // Paid checkout via the server (Razorpay payment link opened in a real
+  // tab — MV3 blocks remote checkout.js inside the panel). Polls the
+  // server profile until the webhook applies the plan, then saves it.
+  const startCheckout = async (planId: "p3" | "p4" | "p5" | "p7" | "p10", kind: "buy" | "renew") => {
+    const sub = session?.sub;
+    if (!sub) {
+      setBillingMsg("Sign in again to start checkout.");
+      return;
+    }
+    setBillingBusy(true);
+    setBillingMsg("Creating secure checkout…");
+    try {
+      const base = await loadServerUrl();
+      const checkout = await serverCheckout(base, sub, planId, kind, session?.email);
+      if (!checkout?.url) {
+        setBillingMsg("Could not start checkout — is the server running?");
+        return;
+      }
+      try {
+        await chrome.tabs.create({ url: checkout.url });
+      } catch {
+        window.open(checkout.url, "_blank");
+      }
+      setBillingMsg("Waiting for payment — complete it in the opened tab…");
+      const before = JSON.stringify(planRef.current);
+      const deadline = Date.now() + 6 * 60_000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const remote = await serverGetProfile(base, sub);
+        if (remote && JSON.stringify(profileToPlan(remote)) !== before) {
+          const next = profileToPlan(remote);
+          setPlan(next);
+          await savePlan(next);
+          setBillingMsg(null);
+          setPlansOpen(false);
+          return;
+        }
+      }
+      setBillingMsg("No payment detected yet — if you paid, reopen Plans in a moment.");
+    } finally {
+      setBillingBusy(false);
+    }
+  };
+
   const handleChooseBase = async (id: ActivePlan["base"]) => {
-    if (tierDiff(plan.base, id) < 0) return;
-    const next: ActivePlan = { ...plan, base: id };
-    setPlan(next);
-    await savePlan(next);
-    setPlansOpen(false);
+    if (id === "free" || tierDiff(plan.base, id) < 0) return;
+    void startCheckout(id, "buy");
   };
 
   const handleChoosePass = async (id: "p7" | "p10") => {
-    const now = Date.now();
-    const dur = id === "p7" ? SIX_MO_MS : ONE_YR_MS;
-    const next: ActivePlan = { ...plan, pass: { id, startedAt: now, expiresAt: now + dur } };
-    setPlan(next);
-    await savePlan(next);
-    setPlansOpen(false);
+    void startCheckout(id, "buy");
   };
 
   const handleRenewPass = async () => {
-    // Final-15-days renewal only: another 6 months for the $3 difference,
-    // added onto the current expiry. Lifetimes stay untouched.
+    // Final-15-days renewal only, same rule as before — payment happens
+    // through checkout, the webhook extends the expiry.
     if (!plan.pass || plan.pass.expiresAt <= Date.now()) return;
     if (plan.pass.expiresAt - Date.now() > PASS_RENEW_DAYS * 86_400_000) return;
-    const next: ActivePlan = {
-      ...plan,
-      pass: { ...plan.pass, expiresAt: plan.pass.expiresAt + SIX_MO_MS },
-    };
-    setPlan(next);
-    await savePlan(next);
-    setPlansOpen(false);
+    void startCheckout(plan.pass.id, "renew");
   };
 
   const handleComplete = async (items: QueueItem[], elapsedMs: number) => {
@@ -455,10 +489,11 @@ function App() {
       {plansOpen && (
         <PlansView
           plan={activePlan}
+          billing={{ busy: billingBusy, msg: billingMsg }}
           onChooseBase={handleChooseBase}
           onBuyPass={handleChoosePass}
           onRenewPass={handleRenewPass}
-          onClose={() => setPlansOpen(false)}
+          onClose={() => { if (!billingBusy) setBillingMsg(null); setPlansOpen(false); }}
         />
       )}
     </div>

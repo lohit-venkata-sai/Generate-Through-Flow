@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "vitest";
 import request from "supertest";
+import "./env.js";
 import { app } from "../src/app.js";
 import { getSupabase } from "../src/lib/supabase.js";
 
@@ -35,13 +36,13 @@ describe("usage validation (no DB writes)", () => {
 });
 
 describe("usage round-trip (live Supabase)", () => {
-  it("starts at zero for a fresh sub", async () => {
+  it.runIf(getSupabase())("starts at zero for a fresh sub", async () => {
     const res = await request(app).get(`/api/usage/${SUB}`);
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ date: todayKey(), used: 0 });
   });
 
-  it("consume accumulates across calls", async () => {
+  it.runIf(getSupabase())("consume accumulates across calls", async () => {
     const first = await request(app).post(`/api/usage/${SUB}/consume`).send({ images: 2 });
     expect(first.status).toBe(200);
     expect(first.body.used).toBe(2);

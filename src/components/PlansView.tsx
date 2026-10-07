@@ -8,6 +8,7 @@ import type { ActivePlan, PlanId } from "../types";
 
 interface PlansViewProps {
     plan: ActivePlan;
+    billing: { busy: boolean; msg: string | null };
     onChooseBase: (id: "free" | "p3" | "p4" | "p5") => void;
     onBuyPass: (id: "p7" | "p10") => void;
     onRenewPass: () => void;
@@ -35,7 +36,7 @@ const TRUST: { icon: React.ReactNode; title: string; sub: string }[] = [
     { icon: <Lock className="size-5" />, title: "Secure checkout", sub: "Your payment is safe" },
 ];
 
-export function PlansView({ plan, onChooseBase, onBuyPass, onRenewPass, onClose }: PlansViewProps) {
+export function PlansView({ plan, billing, onChooseBase, onBuyPass, onRenewPass, onClose }: PlansViewProps) {
     const [term, setTerm] = useState<"p7" | "p10">("p7");
     const offer = passOffer(plan);
     const days = plan.pass ? passDaysLeft(plan.pass) : 0;
@@ -123,13 +124,18 @@ export function PlansView({ plan, onChooseBase, onBuyPass, onRenewPass, onClose 
                             <button
                                 type="button"
                                 onClick={() => (offer === "renew" ? onRenewPass() : onBuyPass(term))}
-                                disabled={offer === "locked"}
+                                disabled={offer === "locked" || billing.busy}
                                 className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-2xl bg-gradient-to-r from-violet-600 to-blue-500 text-sm font-bold whitespace-nowrap text-white shadow-lg transition-all hover:brightness-110 active:scale-[0.99] disabled:opacity-60"
                             >
-                                {offer === "renew" ? "Renew for $3" : "Get Unlimited"}
+                                {billing.busy ? "Opening…" : offer === "renew" ? "Renew for $3" : "Get Unlimited"}
                                 <ArrowRight className="size-4" />
                             </button>
                         </div>
+                        {billing.msg && (
+                            <p className="mt-2 rounded-xl bg-sky-400/10 px-3 py-2 text-center text-[11px] font-medium text-sky-200">
+                                {billing.msg}
+                            </p>
+                        )}
                     </div>
                 </div>
 
@@ -187,11 +193,11 @@ export function PlansView({ plan, onChooseBase, onBuyPass, onRenewPass, onClose 
                                     <button
                                         type="button"
                                         onClick={() => onChooseBase(tierId)}
-                                        disabled={active}
+                                        disabled={active || billing.busy}
                                         title={active ? "Current base plan" : `Pay only $${diff} extra`}
                                         className="mt-1.5 h-8 w-full rounded-xl bg-primary/15 text-[11px] font-bold text-primary hover:bg-primary/25 disabled:opacity-60"
                                     >
-                                        {active ? "Current" : plan.base === "free" ? `Choose $${t.price}` : `Pay $${diff}`}
+                                        {billing.busy ? "Opening…" : active ? "Current" : plan.base === "free" ? `Choose $${t.price}` : `Pay $${diff}`}
                                     </button>
                                 </div>
                             );
@@ -214,7 +220,7 @@ export function PlansView({ plan, onChooseBase, onBuyPass, onRenewPass, onClose 
                     ))}
                 </div>
                 <p className="px-4 pb-3 text-center text-[10px] text-muted-foreground">
-                    Demo checkout — selection is saved on this device until billing connects.
+                    Secure checkout via Razorpay — plan activates automatically after payment.
                 </p>
             </div>
         </div>

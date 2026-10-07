@@ -1,6 +1,6 @@
 // Thin client for the FlowPilot server (server/). Every call fails soft —
 // null means "server unreachable", and callers fall back to local storage.
-import type { DailyUsage } from "../types";
+import type { ActivePlan, DailyUsage } from "../types";
 
 const URL_KEY = "flowpilot-server-url";
 
@@ -69,5 +69,39 @@ export function serverConsume(base: string, sub: string, images: number): Promis
   return req(base, `/api/usage/${encodeURIComponent(sub)}/consume`, {
     method: "POST",
     body: JSON.stringify({ images }),
+  });
+}
+
+export interface ServerProfile {
+  base: ActivePlan["base"];
+  pass: { id: "p7" | "p10"; startedAt: number; expiresAt: number } | null;
+}
+
+/** Map a server profile onto the local plan shape (same fields). */
+export function profileToPlan(p: ServerProfile): ActivePlan {
+  const base = (["free", "p3", "p4", "p5"] as const).includes(p.base as ActivePlan["base"])
+    ? (p.base as ActivePlan["base"])
+    : "free";
+  const pass =
+    p.pass && (p.pass.id === "p7" || p.pass.id === "p10")
+      ? { id: p.pass.id, startedAt: p.pass.startedAt ?? 0, expiresAt: p.pass.expiresAt ?? 0 }
+      : null;
+  return { base, pass };
+}
+
+export function serverGetProfile(base: string, sub: string): Promise<ServerProfile | null> {
+  return req(base, `/api/billing/profile/${encodeURIComponent(sub)}`);
+}
+
+export function serverCheckout(
+  base: string,
+  sub: string,
+  planId: string,
+  kind: "buy" | "renew",
+  email?: string,
+): Promise<{ url: string; paymentLinkId: string | null } | null> {
+  return req(base, "/api/billing/checkout", {
+    method: "POST",
+    body: JSON.stringify({ sub, planId, kind, email: email ?? "" }),
   });
 }

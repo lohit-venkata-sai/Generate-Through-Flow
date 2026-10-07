@@ -1,5 +1,6 @@
 -- FlowPilot Supabase schema. Run in Supabase SQL editor.
--- Tables: profiles (one row per Google sub), daily_usage (one row per sub+date).
+-- Tables: profiles (one row per Google sub), daily_usage (one row per sub+date),
+-- billing_events (webhook idempotency, one row per Razorpay payment event).
 
 create table if not exists public.profiles (
   sub text primary key,
@@ -20,6 +21,13 @@ create table if not exists public.daily_usage (
   used integer not null default 0,
   updated_at timestamptz not null default now(),
   primary key (sub, date)
+);
+
+create table if not exists public.billing_events (
+  event_key text primary key,
+  sub text not null default '',
+  plan_id text not null default '',
+  created_at timestamptz not null default now()
 );
 
 -- Service-role key bypasses RLS; no policies needed for server-only access.
