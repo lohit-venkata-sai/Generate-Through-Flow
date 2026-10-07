@@ -12,6 +12,7 @@ import { usageRouter } from "./routes/usage.js";
 dotenv.config();
 
 const CLIENT_ORIGIN = process.env.CLIENT_ORIGIN || "";
+const allowedOrigins = CLIENT_ORIGIN.split(",").map((o) => o.trim()).filter(Boolean);
 
 export const app = express();
 
@@ -26,10 +27,10 @@ app.use((req, res, next) => {
 });
 app.use(
   cors({
-    // Chrome extensions send no Origin on some calls; allow requests with
-    // no origin while restricting browser origins to the configured one.
+    // Chrome extensions send their own origin (chrome-extension://<id>);
+    // empty allow-list means allow all (local dev only).
     origin: (origin, cb) => {
-      if (!origin || !CLIENT_ORIGIN || origin === CLIENT_ORIGIN) cb(null, true);
+      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) cb(null, true);
       else cb(new Error("cors blocked"));
     },
   }),
