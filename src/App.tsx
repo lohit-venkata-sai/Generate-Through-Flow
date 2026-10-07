@@ -205,15 +205,24 @@ function App() {
     setView("main");
   };
 
-  // Paid checkout via the server (Razorpay payment link opened in a real
-  // tab — MV3 blocks remote checkout.js inside the panel). Polls the
-  // server profile until the webhook applies the plan, then saves it.
+  // Paid checkout via the server (payment page opened in a real tab —
+  // MV3 blocks remote checkout.js inside the panel). Polls the server
+  // profile until the webhook applies the plan, then saves it.
+  // Cancellable: closing the dialog or unmounting stops the poll.
+  const pollCancel = useRef(false);
+  useEffect(() => () => { pollCancel.current = true; }, []);
+  const cancelCheckout = () => {
+    pollCancel.current = true;
+    setBillingBusy(false);
+    setBillingMsg(null);
+  };
   const startCheckout = async (planId: "p3" | "p4" | "p5" | "p7" | "p10", kind: "buy" | "renew") => {
     const sub = session?.sub;
     if (!sub) {
       setBillingMsg("Sign in again to start checkout.");
       return;
     }
+    pollCancel.current = false;
     setBillingBusy(true);
     setBillingMsg("Creating secure checkout…");
     try {
@@ -231,19 +240,21 @@ function App() {
       setBillingMsg("Waiting for payment — complete it in the opened tab…");
       const before = JSON.stringify(planRef.current);
       const deadline = Date.now() + 6 * 60_000;
-      while (Date.now() < deadline) {
+      while (Date.now() < deadline && !pollCancel.current) {
         await new Promise((r) => setTimeout(r, 4000));
+        if (pollCancel.current) break;
         const remote = await serverGetProfile(base, sub);
         if (remote && JSON.stringify(profileToPlan(remote)) !== before) {
           const next = profileToPlan(remote);
           setPlan(next);
           await savePlan(next);
-          setBillingMsg(null);
-          setPlansOpen(false);
+          setBillingMsg("Payment successful — your plan is active!");
           return;
         }
       }
-      setBillingMsg("No payment detected yet — if you paid, reopen Plans in a moment.");
+      if (!pollCancel.current) {
+        setBillingMsg("No payment detected yet — if you paid, reopen Plans in a moment.");
+      }
     } finally {
       setBillingBusy(false);
     }
@@ -489,7 +500,7 @@ function App() {
       {plansOpen && (
         <PlansView
           plan={activePlan}
-          billing={{ busy: billingBusy, msg: billingMsg }}
+          billing={{ busy: billingBusy, msg: billingMsg, onCancel: cancelCheckout }}
           onChooseBase={handleChooseBase}
           onBuyPass={handleChoosePass}
           onRenewPass={handleRenewPass}

@@ -77,7 +77,7 @@ billingRouter.post("/webhook", express.raw({ type: "*/*" }), async (req, res) =>
     res.status(400).json({ error: "bad signature" });
     return;
   }
-  if (event.type !== "payment.succeeded") {
+  if (event.type !== "payment.succeeded" && event.type !== "refund.succeeded") {
     res.json({ received: true, ignored: event.type });
     return;
   }
@@ -85,29 +85,64 @@ billingRouter.post("/webhook", express.raw({ type: "*/*" }), async (req, res) =>
     payment_id?: string;
     metadata?: { sub?: string; plan_id?: string; kind?: string };
   };
+  if (event.type === "refund.succeeded") {
+    // Money went back — revoke the granted plan, but only if the user
+    // still holds exactly what the payment bought (never nuke later buys).
+    const refundPaymentId = data.payment_id || "";
+    try {
+      const sb = getSupabase();
+      if (!sb) throw new Error("supabase not configured");
+      const { data: original } = await sb
+        .from("billing_events")
+        .select("sub, plan_id")
+        .eq("event_key", `payment.succeeded:${refundPaymentId}`)
+        .maybeSingle();
+      if (!original) {
+        res.json({ received: true, ignored: "unknown payment" });
+        return;
+      }
+      const profile = await readProfile(original.sub);
+      if (PLAN_KIND[original.plan_id as PaidPlanId] === "base" && profile.base === original.plan_id) {
+        await sb.from("profiles").update({ base_plan: "free" }).eq("sub", original.sub);
+      }
+      if (PLAN_KIND[original.plan_id as PaidPlanId] === "pass" && profile.pass?.id === original.plan_id) {
+        await sb.from("profiles").update({ pass_id: null, pass_started_at: null, pass_expires_at: null }).eq("sub", original.sub);
+      }
+      res.json({ received: true, revoked: original.plan_id });
+    } catch {
+      res.status(502).json({ error: "revoke failed" });
+    }
+    return;
+  }
   const sub = data.metadata?.sub;
   const planId = data.metadata?.plan_id;
   const kind = (data.metadata?.kind || "buy") as CheckoutKind;
   if (!sub || !isPaidPlan(planId)) {
-    res.status(400).json({ error: "bad metadata" });
+    // Valid signature but unusable payload — 200 so Dodo stops retrying.
+    res.json({ received: true, ignored: "bad metadata" });
     return;
   }
   const eventKey = `payment.succeeded:${data.payment_id || ""}`;
+  const sb = getSupabase();
+  if (!sb) {
+    res.status(502).json({ error: "supabase not configured" });
+    return;
+  }
+  // Idempotency: Dodo retries events; apply each payment once. The row is
+  // removed again if applying fails, so a retry can still succeed.
+  const { error: seenErr } = await sb
+    .from("billing_events")
+    .insert({ event_key: eventKey, sub, plan_id: planId });
+  if (seenErr) {
+    // Duplicate key = already processed.
+    res.json({ received: true, duplicate: true });
+    return;
+  }
   try {
-    const sb = getSupabase();
-    if (!sb) throw new Error("supabase not configured");
-    // Idempotency: Dodo retries events; apply each payment once.
-    const { error: seenErr } = await sb
-      .from("billing_events")
-      .insert({ event_key: eventKey, sub, plan_id: planId });
-    if (seenErr) {
-      // Duplicate key = already processed.
-      res.json({ received: true, duplicate: true });
-      return;
-    }
     const plan = await applyPaidPlan(sub, planId, kind);
     res.json({ received: true, plan });
   } catch {
+    await sb.from("billing_events").delete().eq("event_key", eventKey);
     res.status(502).json({ error: "plan update failed" });
   }
 });

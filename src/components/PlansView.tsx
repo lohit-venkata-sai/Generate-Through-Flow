@@ -8,7 +8,7 @@ import type { ActivePlan, PlanId } from "../types";
 
 interface PlansViewProps {
     plan: ActivePlan;
-    billing: { busy: boolean; msg: string | null };
+    billing: { busy: boolean; msg: string | null; onCancel: () => void };
     onChooseBase: (id: "free" | "p3" | "p4" | "p5") => void;
     onBuyPass: (id: "p7" | "p10") => void;
     onRenewPass: () => void;
@@ -132,9 +132,20 @@ export function PlansView({ plan, billing, onChooseBase, onBuyPass, onRenewPass,
                             </button>
                         </div>
                         {billing.msg && (
-                            <p className="mt-2 rounded-xl bg-sky-400/10 px-3 py-2 text-center text-[11px] font-medium text-sky-200">
-                                {billing.msg}
-                            </p>
+                            <div className="mt-2 rounded-xl bg-sky-400/10 px-3 py-2 text-center">
+                                <p className="text-[11px] font-medium text-sky-200">
+                                    {billing.msg}
+                                </p>
+                                {billing.busy && (
+                                    <button
+                                        type="button"
+                                        onClick={billing.onCancel}
+                                        className="mt-1.5 h-8 rounded-lg border border-white/15 px-4 text-[11px] font-semibold text-muted-foreground hover:text-foreground"
+                                    >
+                                        Cancel
+                                    </button>
+                                )}
+                            </div>
                         )}
                     </div>
                 </div>
