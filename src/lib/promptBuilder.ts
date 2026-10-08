@@ -3,7 +3,8 @@ import type { FormValues } from "../types";
 
 const modelLabels: Record<string, string> = {
    "nano-banana-pro": "Nano Banana Pro",
-   "nano-banana-2": "Nano Banana 2",
+   "nano-banana-2.1": "Nano Banana 2.1",
+   "nano-banana-2": "Nano Banana 2.1",
    "nano-banana-lite": "Nano Banana 2 Lite",
    "nano-banana-2-lite": "Nano Banana 2 Lite",
 };

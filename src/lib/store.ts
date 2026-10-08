@@ -8,6 +8,7 @@ const RESUME_KEY = "flowpilot-resume";
 const SESSION_KEY = "flowpilot-session";
 const PLAN_KEY = "flowpilot-plan";
 const USAGE_KEY = "flowpilot-usage";
+const TOUR_SEEN_KEY = "flowpilot-tour-seen";
 
 export const defaultPrefs: AutomationPrefs = {
     autoSave: true,
@@ -17,7 +18,7 @@ export const defaultPrefs: AutomationPrefs = {
     notifyDone: false,
     stopOnError: false,
     retries: 1,
-    parallel: 1,
+    parallel: 2,
     bufferSec: 0,
 };
 
@@ -61,6 +62,17 @@ export const savePlan = (p: ActivePlan) => set(PLAN_KEY, p);
 
 export const loadUsage = () => get<DailyUsage>(USAGE_KEY);
 export const saveUsage = (u: DailyUsage) => set(USAGE_KEY, u);
+
+/** Tour seen flags keyed by Google sub — tour shows only on first login. */
+export const loadTourSeen = async (sub: string): Promise<boolean> => {
+    const map = await get<Record<string, boolean>>(TOUR_SEEN_KEY);
+    return !!map?.[sub];
+};
+export const saveTourSeen = async (sub: string): Promise<void> => {
+    const map = (await get<Record<string, boolean>>(TOUR_SEEN_KEY)) ?? {};
+    map[sub] = true;
+    await set(TOUR_SEEN_KEY, map);
+};
 
 export const PLANS: PlanDef[] = [
     { id: "free", price: 0, dailyLimit: 50, term: "Free forever", blurb: "50 images per day" },

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ArrowRight, AtSign, Hash, Play, Settings2, Sparkles, X } from "lucide-react";
+import { useLockBodyScroll } from "../lib/useLockBodyScroll";
 
 const STEPS = [
     {
@@ -33,6 +34,7 @@ export function TourOverlay({ onDone }: { onDone: () => void }) {
     const [step, setStep] = useState(0);
     const last = step === STEPS.length - 1;
     const s = STEPS[step];
+    useLockBodyScroll();
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Product tour">

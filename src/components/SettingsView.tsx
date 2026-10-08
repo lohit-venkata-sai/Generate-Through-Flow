@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Bell, BookmarkPlus, Download, FolderPen, History, Play, Trash2, Upload } from "lucide-react";
 import { checkFlowConnection } from "../lib/runQueue";
-import { loadServerUrl, saveServerUrl, serverHealth } from "../lib/server";
 import { savePresets, uid } from "../lib/store";
+import { Dropdown } from "./Dropdown";
 import type { AutomationPrefs, FormValues, SavedPreset } from "../types";
 
 interface SettingsViewProps {
@@ -38,12 +38,6 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
     const [diag, setDiag] = useState<string | null>(null);
     const [diagBusy, setDiagBusy] = useState(false);
     const [notice, setNotice] = useState<string | null>(null);
-    const [serverUrl, setServerUrl] = useState("");
-    const [serverStatus, setServerStatus] = useState<string | null>(null);
-    const [serverBusy, setServerBusy] = useState(false);
-    useEffect(() => {
-        loadServerUrl().then(setServerUrl).catch(() => undefined);
-    }, []);
     const set = (patch: Partial<FormValues>) => setFormValues((p) => ({ ...p, ...patch }));
     const setP = (patch: Partial<AutomationPrefs>) => setPrefs((p) => ({ ...p, ...patch }));
 
@@ -76,19 +70,6 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
             setDiag("Diagnostics failed.");
         } finally {
             setDiagBusy(false);
-        }
-    };
-
-    const testServer = async () => {
-        setServerBusy(true);
-        try {
-            await saveServerUrl(serverUrl);
-            const res = await serverHealth(serverUrl);
-            setServerStatus(res?.ok ? "Server reachable." : "Server unreachable — using local data.");
-        } catch {
-            setServerStatus("Server unreachable — using local data.");
-        } finally {
-            setServerBusy(false);
         }
     };
 
@@ -180,48 +161,71 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
             {tab === "general" && (
                 <section className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm">
                     <h2 className="text-sm font-semibold">Default Settings</h2>
-                    <label className="block text-xs font-medium text-muted-foreground">
-                        Model
-                        <select value={formValues.model} onChange={(e) => set({ model: e.target.value })} className="mt-1.5 h-10 w-full rounded-xl border bg-background px-3 text-sm text-foreground outline-none">
-                            <option value="nano-banana-pro">Nano Banana Pro</option>
-                            <option value="nano-banana-2">Nano Banana 2</option>
-                            <option value="nano-banana-2-lite">Nano Banana 2 Lite</option>
-                        </select>
-                    </label>
-                    <div className="grid grid-cols-2 gap-3">
-                        <label className="block text-xs font-medium text-muted-foreground">
-                            Aspect Ratio
-                            <select value={formValues.aspect_ratio} onChange={(e) => set({ aspect_ratio: e.target.value })} className="mt-1.5 h-10 w-full rounded-xl border bg-background px-3 text-sm text-foreground outline-none">
-                                <option value="9:16">9:16</option>
-                                <option value="16:9">16:9</option>
-                                <option value="1:1">1:1</option>
-                            </select>
-                        </label>
-                        <label className="block text-xs font-medium text-muted-foreground">
-                            Quality
-                            <select value={formValues.quality} onChange={(e) => set({ quality: e.target.value as FormValues["quality"] })} className="mt-1.5 h-10 w-full rounded-xl border bg-background px-3 text-sm text-foreground outline-none">
-                                <option value="standard">Standard</option>
-                            </select>
-                        </label>
+                    <div className="text-xs font-medium text-muted-foreground">
+                        <span className="mb-1.5 block">Model</span>
+                        <Dropdown
+                            aria="Model"
+                            value={formValues.model}
+                            onChange={(v) => set({ model: v })}
+                            options={[
+                                { value: "nano-banana-pro", label: "Nano Banana Pro" },
+                                { value: "nano-banana-2.1", label: "Nano Banana 2.1" },
+                                { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite" },
+                            ]}
+                        />
                     </div>
-                    <label className="block text-xs font-medium text-muted-foreground">
-                        Images per prompt
-                        <select value={String(formValues.images_per_prompt)} onChange={(e) => set({ images_per_prompt: Number(e.target.value) as 1 | 2 | 3 | 4 })} className="mt-1.5 h-10 w-full rounded-xl border bg-background px-3 text-sm text-foreground outline-none">
-                            <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="3">3</option>
-                            <option value="4">4</option>
-                        </select>
-                    </label>
-                    <label className="block text-xs font-medium text-muted-foreground">
-                        Separator
-                        <select value={formValues.separator} onChange={(e) => set({ separator: e.target.value as FormValues["separator"] })} className="mt-1.5 h-10 w-full rounded-xl border bg-background px-3 text-sm text-foreground outline-none">
-                            <option value="empty-line">Empty line</option>
-                            <option value="new-line">New line</option>
-                            <option value="numbered">Numbered</option>
-                            <option value="dashes">---</option>
-                        </select>
-                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                        <div className="text-xs font-medium text-muted-foreground">
+                            <span className="mb-1.5 block">Aspect Ratio</span>
+                            <Dropdown
+                                aria="Aspect Ratio"
+                                value={formValues.aspect_ratio}
+                                onChange={(v) => set({ aspect_ratio: v })}
+                                options={[
+                                    { value: "9:16", label: "9:16" },
+                                    { value: "16:9", label: "16:9" },
+                                    { value: "1:1", label: "1:1" },
+                                ]}
+                            />
+                        </div>
+                        <div className="text-xs font-medium text-muted-foreground">
+                            <span className="mb-1.5 block">Quality</span>
+                            <Dropdown
+                                aria="Quality"
+                                value={formValues.quality}
+                                onChange={(v) => set({ quality: v as FormValues["quality"] })}
+                                options={[{ value: "standard", label: "Standard" }]}
+                            />
+                        </div>
+                    </div>
+                    <div className="text-xs font-medium text-muted-foreground">
+                        <span className="mb-1.5 block">Images per prompt</span>
+                        <Dropdown
+                            aria="Images per prompt"
+                            value={String(formValues.images_per_prompt)}
+                            onChange={(v) => set({ images_per_prompt: Number(v) as 1 | 2 | 3 | 4 })}
+                            options={[
+                                { value: "1", label: "1" },
+                                { value: "2", label: "2" },
+                                { value: "3", label: "3" },
+                                { value: "4", label: "4" },
+                            ]}
+                        />
+                    </div>
+                    <div className="text-xs font-medium text-muted-foreground">
+                        <span className="mb-1.5 block">Separator</span>
+                        <Dropdown
+                            aria="Separator"
+                            value={formValues.separator}
+                            onChange={(v) => set({ separator: v as FormValues["separator"] })}
+                            options={[
+                                { value: "empty-line", label: "Empty line" },
+                                { value: "new-line", label: "New line" },
+                                { value: "numbered", label: "Numbered" },
+                                { value: "dashes", label: "---" },
+                            ]}
+                        />
+                    </div>
                     <div className="space-y-1 pt-1">
                         <div className="flex items-center gap-2.5 rounded-xl px-1 py-1.5">
                             <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
@@ -302,39 +306,55 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
             {tab === "automation" && (
                 <section className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm">
                     <h2 className="text-sm font-semibold">Automation</h2>
-                    <label className="block text-xs font-medium text-muted-foreground">
-                        Parallel jobs
-                        <select value={String(prefs.parallel ?? 1)} onChange={(e) => setP({ parallel: Number(e.target.value) as 1 | 2 | 3 })} className="mt-1.5 h-10 w-full rounded-xl border bg-background px-3 text-sm text-foreground outline-none">
-                            <option value="1">1 at a time (safest)</option>
-                            <option value="2">2 at a time</option>
-                            <option value="3">3 at a time (fastest)</option>
-                        </select>
-                    </label>
+                    <div className="text-xs font-medium text-muted-foreground">
+                        <span className="mb-1.5 block">Parallel jobs</span>
+                        <Dropdown
+                            aria="Parallel jobs"
+                            value={String(prefs.parallel ?? 2)}
+                            onChange={(v) => setP({ parallel: Number(v) as AutomationPrefs["parallel"] })}
+                            options={[
+                                { value: "2", label: "2× at a time" },
+                                { value: "5", label: "5× at a time" },
+                                { value: "7", label: "7× at a time" },
+                                { value: "10", label: "10× at a time" },
+                            ]}
+                        />
+                    </div>
                     <p className="-mt-2 text-[11px] leading-relaxed text-muted-foreground">
                         Google may throttle parallel generation — throttled items retry alone.
                     </p>
-                    <label className="block text-xs font-medium text-muted-foreground">
-                        Retries per prompt
-                        <select value={String(prefs.retries)} onChange={(e) => setP({ retries: Number(e.target.value) })} className="mt-1.5 h-10 w-full rounded-xl border bg-background px-3 text-sm text-foreground outline-none">
-                            <option value="0">0 (no retry)</option>
-                            <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="3">3</option>
-                        </select>
-                    </label>
+                    <div className="text-xs font-medium text-muted-foreground">
+                        <span className="mb-1.5 block">Retries per prompt</span>
+                        <Dropdown
+                            aria="Retries per prompt"
+                            value={String(prefs.retries)}
+                            onChange={(v) => setP({ retries: Number(v) })}
+                            options={[
+                                { value: "0", label: "0 (no retry)" },
+                                { value: "1", label: "1" },
+                                { value: "2", label: "2" },
+                                { value: "3", label: "3" },
+                            ]}
+                        />
+                    </div>
                     <div className="flex items-center gap-3">
                         <span className="text-xs">Stop whole batch on first error</span>
                         <span className="ml-auto"><Toggle on={prefs.stopOnError} onClick={() => setP({ stopOnError: !prefs.stopOnError })} label="Stop on first error" /></span>
                     </div>
-                    <label className="block text-xs font-medium text-muted-foreground">
-                        Buffer between requests
-                        <select value={String(prefs.bufferSec ?? 0)} onChange={(e) => setP({ bufferSec: Number(e.target.value) })} className="mt-1.5 h-10 w-full rounded-xl border bg-background px-3 text-sm text-foreground outline-none">
-                            <option value="0">Off</option>
-                            <option value="5">5 seconds</option>
-                            <option value="10">10 seconds</option>
-                            <option value="15">15 seconds</option>
-                        </select>
-                    </label>
+                    <div className="text-xs font-medium text-muted-foreground">
+                        <span className="mb-1.5 block">Buffer between requests</span>
+                        <Dropdown
+                            aria="Buffer between requests"
+                            value={String(prefs.bufferSec ?? 0)}
+                            onChange={(v) => setP({ bufferSec: Number(v) })}
+                            options={[
+                                { value: "0", label: "Off" },
+                                { value: "5", label: "5 seconds" },
+                                { value: "10", label: "10 seconds" },
+                                { value: "15", label: "15 seconds" },
+                            ]}
+                        />
+                    </div>
                     <p className="text-[11px] leading-relaxed text-muted-foreground">
                         No quota or rate caps are applied — every prompt runs until done, failed, or stopped.
                     </p>
@@ -353,26 +373,6 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
                         {diagBusy ? "Checking…" : "Check Flow connection"}
                     </button>
                     {diag && <p className="rounded-xl bg-muted/60 px-3 py-2 text-[11px]">{diag}</p>}
-
-                    <h2 className="pt-1 text-sm font-semibold">Server</h2>
-                    <input
-                        value={serverUrl}
-                        onChange={(e) => setServerUrl(e.target.value)}
-                        onBlur={() => { void saveServerUrl(serverUrl); }}
-                        placeholder="http://localhost:3001"
-                        aria-label="Server URL"
-                        spellCheck={false}
-                        className="h-10 w-full rounded-xl border bg-background px-3 font-mono text-xs outline-none"
-                    />
-                    <button
-                        type="button"
-                        onClick={testServer}
-                        disabled={serverBusy}
-                        className="h-10 w-full rounded-xl border text-xs font-medium hover:bg-accent disabled:opacity-50"
-                    >
-                        {serverBusy ? "Testing…" : "Save & test server"}
-                    </button>
-                    {serverStatus && <p className="rounded-xl bg-muted/60 px-3 py-2 text-[11px]">{serverStatus}</p>}
 
                     <h2 className="pt-1 text-sm font-semibold">Cache</h2>
                     <button type="button" onClick={clearCache} className="h-10 w-full rounded-xl border text-xs font-medium hover:bg-accent">

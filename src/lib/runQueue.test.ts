@@ -10,7 +10,7 @@ const prefs: AutomationPrefs = {
   notifyDone: false,
   stopOnError: false,
   retries: 1,
-  parallel: 1,
+  parallel: 2,
   bufferSec: 0,
 };
 

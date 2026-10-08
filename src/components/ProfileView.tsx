@@ -1,5 +1,6 @@
 import { ArrowRight, CalendarDays, Crown, History, Hourglass, Infinity as InfinityIcon, LogOut, Play, Sparkles, Trash2, Upload, User, X } from "lucide-react";
 import { PASS_RENEW_DAYS, PASS_RENEW_PRICE, passDaysLeft, passStatus, planDef, planName } from "../lib/store";
+import { useLockBodyScroll } from "../lib/useLockBodyScroll";
 import type { ActivePlan, BatchRecord, DailyUsage, GoogleSession } from "../types";
 
 interface ProfileViewProps {
@@ -38,6 +39,7 @@ export function ProfileView({
 
     const usagePct = Math.min(100, Math.round((usage.used / baseLimit) * 100));
     const remaining = Math.max(0, baseLimit - usage.used);
+    useLockBodyScroll();
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3" role="dialog" aria-modal="true" aria-label="Profile">

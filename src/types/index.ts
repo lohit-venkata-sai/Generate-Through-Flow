@@ -1,6 +1,6 @@
 export type PromptSeparator = "empty-line" | "new-line" | "numbered" | "dashes" | "";
 
-export type ModelId = "nano-banana-pro" | "nano-banana-2" | "nano-banana-2-lite";
+export type ModelId = "nano-banana-pro" | "nano-banana-2.1" | "nano-banana-2-lite";
 
 export type AspectRatio = "16:9" | "9:16" | "1:1" | "";
 
@@ -25,7 +25,7 @@ export interface AutomationPrefs {
     notifyDone: boolean;
     stopOnError: boolean;
     retries: number;
-    parallel: 1 | 2 | 3;
+    parallel: 2 | 5 | 7 | 10;
     bufferSec: number;
 }
 

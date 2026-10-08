@@ -197,6 +197,35 @@ export class FlowRunner {
         if (this.tabId != null) void this.abortTab(this.tabId).catch(() => undefined);
     }
 
+    /** Reload the Flow project tab and wait until it finishes loading. */
+    private async reloadFlowTab(tabId: number, log: (level: LogLevel, msg: string) => void): Promise<void> {
+        try {
+            await chrome.tabs.reload(tabId);
+        } catch (e) {
+            log("error", `Flow tab refresh failed (${(e as Error).message}) — continuing without refresh.`);
+            return;
+        }
+        const deadline = Date.now() + 30_000;
+        while (Date.now() < deadline) {
+            if (this.stopped) return;
+            try {
+                const tab = await chrome.tabs.get(tabId);
+                if (tab.status === "complete") {
+                    // Extra settle delay so the Flow app boots before the next request.
+                    await new Promise((r) => setTimeout(r, 2000));
+                    if (this.stopped) return;
+                    return;
+                }
+            } catch {
+                log("error", "Flow tab closed during refresh — stopping.");
+                this.stop();
+                return;
+            }
+            await new Promise((r) => setTimeout(r, 500));
+        }
+        log("error", "Flow tab refresh timed out — continuing anyway.");
+    }
+
     async abortTab(tabId: number) {
         try {
             await exec(tabId, flowAbort);
@@ -362,7 +391,7 @@ export class FlowRunner {
         const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
         const folder = `${baseFolder}/GTF_${dateStamp}`;
         const attempts = 1 + Math.max(0, opts.prefs.retries);
-        const parallel = Math.min(3, Math.max(1, opts.prefs.parallel ?? 1));
+        const parallel = Math.min(10, Math.max(2, opts.prefs.parallel ?? 2));
         const bufferMs = Math.min(120_000, Math.max(0, opts.prefs.bufferSec ?? 0)) * 1000;
 
         // Index project characters for @tag resolution (best effort — the run
@@ -385,9 +414,35 @@ export class FlowRunner {
 
         let cursor = 0;
         let launched = 0;
-        const ctx = { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone: (n: number) => ev.onItemDone?.(n) };
+        // Refresh the Flow project tab every N generated images to keep long
+        // batches healthy (fresh XSRF/recaptcha state, freed page memory).
+        const RELOAD_EVERY_IMAGES = 5;
+        let doneImages = 0;
+        let nextReloadAt = RELOAD_EVERY_IMAGES;
+        let reloadInFlight: Promise<void> | null = null;
+        const ctx = { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone: (n: number) => { doneImages += n; ev.onItemDone?.(n); } };
+        const maybeReload = async () => {
+            if (doneImages < nextReloadAt) return;
+            if (reloadInFlight) {
+                await reloadInFlight;
+                return;
+            }
+            const remaining = state.some((i) => i.status !== "done" && i.status !== "error");
+            if (!remaining || this.stopped) return;
+            nextReloadAt += RELOAD_EVERY_IMAGES;
+            log("info", `Refreshing Flow tab (every ${RELOAD_EVERY_IMAGES} images)…`);
+            reloadInFlight = this.reloadFlowTab(tabId, log);
+            try {
+                await reloadInFlight;
+            } finally {
+                reloadInFlight = null;
+            }
+            if (!this.stopped) log("info", "Flow tab refreshed — resuming.");
+        };
         const worker = async () => {
             while (!this.stopped) {
+                if (reloadInFlight) await reloadInFlight;
+                if (this.stopped) break;
                 const next = state.find((_, k) => k >= cursor && state[k].status !== "done");
                 if (!next) break;
                 cursor = state.indexOf(next) + 1;
@@ -397,6 +452,7 @@ export class FlowRunner {
                     if (this.stopped) break;
                 }
                 await this.runOne(next, ctx);
+                await maybeReload();
                 if (!this.stopped && next.status === "error" && opts.prefs.stopOnError) {
                     log("error", "Stopping on first error (Automation setting).");
                     this.stop();

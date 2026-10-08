@@ -12,6 +12,7 @@ import { buildZip } from "../lib/zipStore";
 import { bgDownload } from "../lib/downloads";
 import { loadResume, saveResume } from "../lib/store";
 import { ResultModal } from "./ResultModal";
+import { Dropdown } from "./Dropdown";
 import type { AutomationPrefs, FormValues, LogEntry, LogLevel, QueueItem } from "../types";
 
 interface AutomateViewProps {
@@ -33,6 +34,10 @@ interface AutomateViewProps {
 let activeRunner: FlowRunner | null = null;
 // Run start timestamp shared across mounts so the elapsed timer survives them.
 let activeRunStart: number | null = null;
+// Fingerprint of the prompts+settings the current queue was built from. If the
+// user edits anything on main/settings and comes back, the stale queue resets
+// to a fresh start instead of showing old results.
+let lastRunFingerprint: string | null = null;
 
 export function AutomateView({ formValues, prefs, setPrefs, items, setItems, logs, pushLog, dailyLimit, usedToday, onConsume, onNeedUpgrade, onComplete }: AutomateViewProps) {
     const prompts = useMemo(
@@ -43,7 +48,6 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
     const [running, setRunning] = useState(false);
     const [tab, setTab] = useState<"queue" | "logs">("queue");
     const [level, setLevel] = useState<"all" | LogLevel>("all");
-    const [showAll, setShowAll] = useState(false);
     const [logsCopied, setLogsCopied] = useState(false);
     const [charIndex, setCharIndex] = useState<CharIndex>(new Map());
     const [modal, setModal] = useState<{ item: number; img: number } | null>(null);
@@ -85,6 +89,17 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
             runStartRef.current = activeRunStart;
             setElapsed(Date.now() - activeRunStart);
             setRunning(true);
+        } else if (items.length > 0) {
+            // No run in flight: if prompts/settings changed while away (main or
+            // settings view), drop the stale queue so this looks like a fresh
+            // start instead of showing old results.
+            const fp = JSON.stringify([prompts, formValues.separator, formValues.model, formValues.aspect_ratio, formValues.images_per_prompt]);
+            if (lastRunFingerprint != null && lastRunFingerprint !== fp) {
+                setItems(prompts.map((raw, index) => {
+                    const { filename, prompt } = splitFilename(raw);
+                    return { index, prompt, filename, status: "pending" as const, images: [], refs: [] };
+                }));
+            }
         }
         timerRef.current = window.setInterval(() => {
             if (activeRunner && activeRunStart != null) {
@@ -149,11 +164,22 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
         activeRunStart = Date.now();
         runStartRef.current = activeRunStart;
         setElapsed(0);
+        ensureTimer();
     };
     const stopTimer = () => {
         activeRunStart = null;
-        if (timerRef.current) window.clearInterval(timerRef.current);
-        timerRef.current = null;
+    };
+    const ensureTimer = () => {
+        if (timerRef.current != null) return;
+        timerRef.current = window.setInterval(() => {
+            if (activeRunner && activeRunStart != null) {
+                runnerRef.current = activeRunner;
+                setElapsed(Date.now() - activeRunStart);
+                setRunning(true);
+            } else {
+                setRunning(false);
+            }
+        }, 500);
     };
 
     const fmt = (ms: number) => {
@@ -186,6 +212,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
         runnerRef.current = runner;
         activeRunner = runner;
         setRunning(true);
+        lastRunFingerprint = JSON.stringify([prompts, formValues.separator, formValues.model, formValues.aspect_ratio, formValues.images_per_prompt]);
         setItems(queue.map((i) => ({ ...i, status: i.status === "done" ? "done" as const : "pending" as const })));
         startTimer();
         try {
@@ -333,7 +360,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
         }
     };
 
-    const visible = showAll ? displayItems : displayItems.slice(0, 6);
+    const visible = displayItems;
     const filteredLogs = logs.filter((l) => level === "all" || l.level === level);
 
     const copyLogs = async () => {
@@ -398,14 +425,14 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                     <>
                     <div className="mt-2 flex items-center gap-2">
                         <span className="shrink-0 text-[11px] font-medium text-muted-foreground">Parallel jobs</span>
-                        <div className="grid flex-1 grid-cols-3 gap-1.5" role="group" aria-label="Parallel jobs">
-                            {([1, 2, 3] as const).map((n) => (
+                        <div className="grid flex-1 grid-cols-4 gap-1.5" role="group" aria-label="Parallel jobs">
+                            {([2, 5, 7, 10] as const).map((n) => (
                                 <button
                                     key={n}
                                     type="button"
-                                    aria-pressed={(prefs.parallel ?? 1) === n}
+                                    aria-pressed={(prefs.parallel ?? 2) === n}
                                     onClick={() => setPrefs((p) => ({ ...p, parallel: n }))}
-                                    className={`h-8 rounded-lg border text-xs font-medium transition-colors ${(prefs.parallel ?? 1) === n ? "border-primary bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"}`}
+                                    className={`h-8 rounded-lg border text-xs font-medium transition-colors ${(prefs.parallel ?? 2) === n ? "border-primary bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"}`}
                                 >
                                     {n}×
                                 </button>
@@ -414,17 +441,20 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                     </div>
                     <div className="mt-2 flex items-center gap-2">
                         <span className="shrink-0 text-[11px] font-medium text-muted-foreground">Buffer between requests</span>
-                        <select
-                            value={String(prefs.bufferSec ?? 0)}
-                            onChange={(e) => setPrefs((p) => ({ ...p, bufferSec: Number(e.target.value) }))}
-                            aria-label="Buffer time between requests"
-                            className="h-8 flex-1 rounded-lg border bg-background px-2 text-xs text-foreground outline-none"
-                        >
-                            <option value="0">Off</option>
-                            <option value="5">5 seconds</option>
-                            <option value="10">10 seconds</option>
-                            <option value="15">15 seconds</option>
-                        </select>
+                        <div className="min-w-0 flex-1">
+                            <Dropdown
+                                aria="Buffer time between requests"
+                                size="sm"
+                                value={String(prefs.bufferSec ?? 0)}
+                                onChange={(v) => setPrefs((p) => ({ ...p, bufferSec: Number(v) }))}
+                                options={[
+                                    { value: "0", label: "Off" },
+                                    { value: "5", label: "5 seconds" },
+                                    { value: "10", label: "10 seconds" },
+                                    { value: "15", label: "15 seconds" },
+                                ]}
+                            />
+                        </div>
                     </div>
                     </>
                 )}
@@ -502,14 +532,9 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                 <section className="rounded-2xl border bg-card p-4 shadow-sm">
                     <div className="mb-2 flex items-center justify-between">
                         <h2 className="text-sm font-semibold">Queue{displayItems.length > 0 && <span className="ml-1.5 text-xs font-normal text-muted-foreground">({displayItems.length} prompts)</span>}</h2>
-                        {displayItems.length > 6 && (
-                            <button type="button" onClick={() => setShowAll((s) => !s)} className="text-xs font-medium text-primary hover:underline">
-                                {showAll ? "Show less" : "Show all"}
-                            </button>
-                        )}
                     </div>
                     {displayItems.length === 0 && <p className="py-4 text-center text-xs text-muted-foreground">No prompts loaded — add some on the main screen.</p>}
-                    <ul className="space-y-1.5">
+                    <ul className="max-h-72 space-y-1.5 overflow-y-auto">
                         {visible.map((item) => (
                             <li key={item.index} className="flex items-center gap-2 rounded-xl border bg-background p-2">
                                 {(item.images[0]?.preview || item.images[0]?.url) ? (
@@ -588,17 +613,20 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                                 {logsCopied ? <Check className="size-3" /> : <Copy className="size-3" />}
                                 {logsCopied ? "Copied" : "Copy"}
                             </button>
-                        <select
-                            value={level}
-                            aria-label="Log level"
-                            onChange={(e) => setLevel(e.target.value as "all" | LogLevel)}
-                            className="h-8 rounded-lg border bg-background px-2 text-xs outline-none"
-                        >
-                            <option value="all">All Levels</option>
-                            <option value="info">Info</option>
-                            <option value="success">Success</option>
-                            <option value="error">Errors</option>
-                        </select>
+                        <div className="w-28">
+                            <Dropdown
+                                aria="Log level"
+                                size="sm"
+                                value={level}
+                                onChange={(v) => setLevel(v as "all" | LogLevel)}
+                                options={[
+                                    { value: "all", label: "All Levels" },
+                                    { value: "info", label: "Info" },
+                                    { value: "success", label: "Success" },
+                                    { value: "error", label: "Errors" },
+                                ]}
+                            />
+                        </div>
                         </div>
                     </div>
                     {filteredLogs.length === 0 && <p className="py-4 text-center text-xs text-muted-foreground">No logs yet.</p>}

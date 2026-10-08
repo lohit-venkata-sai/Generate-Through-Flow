@@ -4,6 +4,7 @@ import {
     Infinity as InfinityIcon, Lock, ShieldCheck, Star, X, Zap,
 } from "lucide-react";
 import { PASS_RENEW_PRICE, nextTier, passDaysLeft, passOffer, tierDiff } from "../lib/store";
+import { useLockBodyScroll } from "../lib/useLockBodyScroll";
 import type { ActivePlan, PlanId } from "../types";
 
 interface PlansViewProps {
@@ -40,6 +41,7 @@ export function PlansView({ plan, billing, onChooseBase, onBuyPass, onRenewPass,
     const [term, setTerm] = useState<"p7" | "p10">("p7");
     const offer = passOffer(plan);
     const days = plan.pass ? passDaysLeft(plan.pass) : 0;
+    useLockBodyScroll();
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3" role="dialog" aria-modal="true" aria-label="Upgrade plans">
@@ -230,9 +232,6 @@ export function PlansView({ plan, billing, onChooseBase, onBuyPass, onRenewPass,
                         </div>
                     ))}
                 </div>
-                <p className="px-4 pb-3 text-center text-[10px] text-muted-foreground">
-                    Secure checkout via Razorpay — plan activates automatically after payment.
-                </p>
             </div>
         </div>
     );

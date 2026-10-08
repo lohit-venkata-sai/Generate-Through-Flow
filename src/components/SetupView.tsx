@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, BookmarkPlus, Check, GripVertical, Plus, Trash2 } from "lucide-react";
 import { parsePrompts } from "../lib/promptParser";
+import { Dropdown } from "./Dropdown";
 import type { FormValues } from "../types";
 
 interface SetupViewProps {
@@ -12,7 +13,7 @@ interface SetupViewProps {
 
 const MODELS = [
     { value: "nano-banana-pro", label: "Nano Banana Pro" },
-    { value: "nano-banana-2", label: "Nano Banana 2" },
+    { value: "nano-banana-2.1", label: "Nano Banana 2.1" },
     { value: "nano-banana-2-lite", label: "Nano Banana 2 Lite" },
 ];
 
@@ -33,18 +34,7 @@ function NativeSelect({ value, onChange, options, aria }: {
     options: { value: string; label: string }[];
     aria: string;
 }) {
-    return (
-        <select
-            value={value}
-            aria-label={aria}
-            onChange={(e) => onChange(e.target.value)}
-            className="h-10 w-full rounded-xl border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-        >
-            {options.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-        </select>
-    );
+    return <Dropdown value={value} onChange={onChange} options={options} aria={aria} />;
 }
 
 export function SetupView({ formValues, setFormValues, onSavePreset, onContinue }: SetupViewProps) {

@@ -2,6 +2,7 @@ import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, X } fro
 import { useState } from "react";
 import { bgDownload } from "../lib/downloads";
 import { findFlowTab } from "../lib/runQueue";
+import { useLockBodyScroll } from "../lib/useLockBodyScroll";
 import { flowImageArtifacts, flowRevokeUrl } from "../lib/flowPage";
 import type { QueueItem } from "../types";
 
@@ -16,6 +17,7 @@ interface ResultModalProps {
 export function ResultModal({ items, itemIndex, imgIndex, onNavigate, onClose }: ResultModalProps) {
     const [copied, setCopied] = useState(false);
     const [saved, setSaved] = useState(false);
+    useLockBodyScroll();
     const withImages = items.filter((i) => i.images.length > 0);
     const pos = withImages.findIndex((i) => i.index === itemIndex);
     const item = pos >= 0 ? withImages[pos] : undefined;

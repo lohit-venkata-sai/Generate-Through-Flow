@@ -12,7 +12,7 @@ import { SetupView } from './components/SetupView'
 import { TourOverlay } from './components/TourOverlay'
 import { signOut } from './lib/auth'
 import { loadServerUrl, serverCheckout, serverConsume, serverGetProfile, serverGetUsage, serverVerify, profileToPlan } from './lib/server'
-import { defaultBatchName, defaultPrefs, effectiveLimit, loadHistory, loadPlan, loadPrefs, loadPresets, loadSession, loadUsage, migratePlan, PASS_RENEW_DAYS, saveHistory, savePlan, savePrefs, savePresets, saveUsage, tierDiff, todayKey, uid } from './lib/store'
+import { defaultBatchName, defaultPrefs, effectiveLimit, loadHistory, loadPlan, loadPrefs, loadPresets, loadSession, loadTourSeen, loadUsage, migratePlan, PASS_RENEW_DAYS, saveHistory, savePlan, savePrefs, savePresets, saveTourSeen, saveUsage, tierDiff, todayKey, uid } from './lib/store'
 import type { ActivePlan, AppView, AutomationPrefs, BatchRecord, DailyUsage, FormValues, GoogleSession, LogEntry, LogLevel, Mode, QueueItem, SavedPreset } from './types'
 
 const STORAGE_KEY = "flowpilot-form-values"
@@ -111,7 +111,9 @@ function App() {
           ...savedValues,
           model: savedValues.model === "nano-banana-lite"
             ? "nano-banana-2-lite"
-            : savedValues.model ?? defaultFormValues.model,
+            : savedValues.model === "nano-banana-2"
+              ? "nano-banana-2.1"
+              : savedValues.model ?? defaultFormValues.model,
           aspect_ratio: savedValues.aspect_ratio || defaultFormValues.aspect_ratio,
           quality: savedValues.quality === "standard" ? savedValues.quality : defaultFormValues.quality,
           separator: savedValues.separator || defaultFormValues.separator,
@@ -123,7 +125,7 @@ function App() {
     loadPrefs().then((p) => {
       const merged = { ...defaultPrefs, ...p };
       if (![0, 5, 10, 15].includes(merged.bufferSec)) merged.bufferSec = 0;
-      if (![1, 2, 3].includes(merged.parallel as number)) merged.parallel = 1;
+      if (![2, 5, 7, 10].includes(merged.parallel as number)) merged.parallel = 2;
       setPrefs(merged);
     }).catch(() => undefined)
     loadPresets().then((p) => p && setPresets(p)).catch(() => undefined)
@@ -138,8 +140,9 @@ function App() {
     }).catch(() => undefined)
     loadSession().then((s) => {
       setSession(s);
-      // No backend yet: treat every launch as a fresh user → tour after login.
-      if (s) setShowTour(true);
+      // Returning user with an existing session → never auto-show the tour.
+      // Mark them as seen so a later sign-out/sign-in doesn't trigger it either.
+      if (s?.sub) void saveTourSeen(s.sub).catch(() => undefined);
     }).catch(() => undefined).finally(() => setSessionChecked(true))
   }, [])
 
@@ -192,10 +195,19 @@ function App() {
   const dailyLimit = effectiveLimit(activePlan);
 
   const handleSignedIn = () => {
-    loadSession().then((s) => {
+    loadSession().then(async (s) => {
       setSession(s);
-      setShowTour(true);
+      // Tour only for brand-new users on their first login.
+      if (!s?.sub) return;
+      const seen = await loadTourSeen(s.sub).catch(() => false);
+      if (!seen) setShowTour(true);
     }).catch(() => undefined);
+  };
+
+  const handleTourDone = () => {
+    const sub = session?.sub;
+    if (sub) void saveTourSeen(sub).catch(() => undefined);
+    setShowTour(false);
   };
 
   const handleSignOut = async () => {
@@ -474,7 +486,7 @@ function App() {
           Runs directly in your Flow project tab — no servers.
         </p>
       </div>
-      {showTour && <TourOverlay onDone={() => setShowTour(false)} />}
+      {showTour && <TourOverlay onDone={handleTourDone} />}
       {profileOpen && session && (
         <ProfileView
           session={session}

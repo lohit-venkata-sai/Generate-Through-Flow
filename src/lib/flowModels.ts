@@ -1,15 +1,18 @@
 // Flow model/aspect codenames + tab matching.
 // Verified against the live Flow frontend (2026-10 build):
-// Nano Banana 2 -> BELUGA, Lite -> HARBOR_SEAL, Pro -> GEM_PIX_2.
+// Nano Banana 2.1 -> BELUGA, Lite -> HARBOR_SEAL, Pro -> GEM_PIX_2.
 
 export const FLOW_MODEL_CODES: Record<string, string> = {
+    "nano-banana-2.1": "BELUGA",
+    // Legacy id — migrated to 2.1 on load.
     "nano-banana-2": "BELUGA",
     "nano-banana-2-lite": "HARBOR_SEAL",
     "nano-banana-pro": "GEM_PIX_2",
 };
 
 export const FLOW_MODEL_LABELS: Record<string, string> = {
-    "nano-banana-2": "Nano Banana 2",
+    "nano-banana-2.1": "Nano Banana 2.1",
+    "nano-banana-2": "Nano Banana 2.1",
     "nano-banana-2-lite": "Nano Banana 2 Lite",
     "nano-banana-pro": "Nano Banana Pro",
 };
