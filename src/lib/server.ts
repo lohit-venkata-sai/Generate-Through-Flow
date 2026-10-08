@@ -2,7 +2,9 @@
 // null means "server unreachable", and callers fall back to local storage.
 import type { ActivePlan, DailyUsage } from "../types";
 
-const URL_KEY = "flowpilot-server-url";
+// Storage key bumped to v2 so installs that stored the old localhost
+// default pick up the configured default (Render in prod) instead.
+const URL_KEY = "flowpilot-server-url-v2";
 
 export const DEFAULT_SERVER_URL =
   import.meta.env.VITE_SERVER_URL || "http://localhost:3001";
