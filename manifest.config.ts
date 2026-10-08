@@ -13,7 +13,7 @@ export default defineManifest({
     action: {
         default_title: "Open Generate Through Flow",
         default_icon: {
-            // "16": "icons/flowpilot-16.png",
+            "16": "icons/flowpilot-16.png",
             "32": "icons/flowpilot-32.png",
             "48": "icons/flowpilot-48.png",
             "128": "icons/flowpilot-128.png",
@@ -21,7 +21,7 @@ export default defineManifest({
     },
 
     icons: {
-        // "16": "icons/flowpilot-16.png",
+        "16": "icons/flowpilot-16.png",
         "32": "icons/flowpilot-32.png",
         "48": "icons/flowpilot-48.png",
         "128": "icons/flowpilot-128.png",
