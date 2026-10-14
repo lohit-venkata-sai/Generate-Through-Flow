@@ -5,7 +5,7 @@ export default defineManifest({
 
     name: "Generate Through Flow",
 
-    version: "1.2.0",
+    version: "1.5.0",
 
     description:
         "Automate bulk AI content generation through Google Flow.",
