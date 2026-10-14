@@ -1,36 +1,33 @@
 # Privacy Policy --- Generate Through Flow
 
-**Last updated:** October 8, 2026
+**Last updated:** October 14, 2026
 
 Generate Through Flow ("the Extension") is a Chrome extension that helps
 users batch-generate images through their own Google Flow projects.
 
+The Extension is free, requires no account, and has no backend servers.
+
 ## 1. Information We Collect
 
-When you sign in with Google, we receive and store basic profile
-information: your name, email address, profile photo, and Google account
-ID. This identifies your account for plan limits and usage tracking.
+We collect nothing. There is no sign-in, no account, no analytics, and
+no usage tracking.
 
-To provide the Extension's functionality, we also process:
+To provide the Extension's functionality, the Extension processes
+locally in your browser:
 
 -   Prompts, filenames, and generation settings you enter
 -   Extension preferences (model, aspect ratio, automation options, presets)
--   Counts of images you generate per day (for plan/quota enforcement)
--   Records of plans you purchase (plan type and validity period)
+-   Batch history (prompt lists and thumbnails of finished batches)
 
 We do not collect your browsing history, location, health data, or
-contacts. Payment details (such as card numbers) are handled entirely by
-our payment provider on its secure checkout page and are never entered
-into or visible to the Extension.
+contacts. There are no payments and no payment details of any kind.
 
 ## 2. Data Storage
 
-Settings, presets, prompt history, and your sign-in session are stored
-locally in your browser using Chrome's storage.
-
-Your account profile, daily usage counts, and plan records are also
-stored on our backend servers so your limits and purchases work
-correctly. Data is transmitted securely and is never sold.
+Settings, presets, prompt history, and preferences are stored locally
+in your browser using Chrome's storage. Nothing is sent to any server
+operated by us, because there isn't one. Local data is removed if you
+uninstall the Extension.
 
 ## 3. Website Access
 
@@ -48,29 +45,24 @@ It is never used to collect unrelated browsing history.
 The Extension interacts with:
 
 -   **Google Flow** --- to generate images, under Google's policies
--   **Google Sign-In** --- for authentication, under Google's policies
--   **Dodo Payments** --- for plan checkout on its secure hosted page,
-    under Dodo's policies
+
+There is no sign-in provider, no backend, and no payment provider.
 
 ## 5. Data Sharing
 
 We do not sell, rent, or share user data with advertisers, data brokers,
 or other third parties, and we do not use user data for advertising or
-profiling. Account and billing records are processed only to operate
-your account and fulfill purchases.
+profiling. There is no account data to share.
 
 ## 6. Data Security
 
-Account data is stored on access-controlled backend systems. Local data
-lives only in your browser and is removed if you uninstall the
-Extension. No method of transmission or storage is completely secure,
-so avoid entering highly sensitive information into prompts.
+All data lives only in your browser. No method of storage is completely
+secure, so avoid entering highly sensitive information into prompts.
 
 ## 7. Children's Privacy
 
 Generate Through Flow is not directed to children under 13, and we do
-not knowingly collect personal information from children. Paid plans
-require an adult payment method.
+not knowingly collect personal information from children.
 
 ## 8. Changes to This Privacy Policy
 

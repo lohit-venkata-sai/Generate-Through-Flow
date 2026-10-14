@@ -1,14 +1,12 @@
 // chrome.storage.local persistence for presets, history, prefs, resume state.
-import type { ActivePlan, AutomationPrefs, BatchRecord, DailyUsage, FormValues, GoogleSession, PassState, PlanDef, PlanId, SavedPreset } from "../types";
+// Free build: no accounts, no plans, no usage tracking — everything is local.
+import type { AutomationPrefs, BatchRecord, FormValues, SavedPreset } from "../types";
 
 const PRESETS_KEY = "flowpilot-presets";
 const HISTORY_KEY = "flowpilot-history";
 const PREFS_KEY = "flowpilot-prefs";
 const RESUME_KEY = "flowpilot-resume";
-const SESSION_KEY = "flowpilot-session";
-const PLAN_KEY = "flowpilot-plan";
-const USAGE_KEY = "flowpilot-usage";
-const TOUR_SEEN_KEY = "flowpilot-tour-seen";
+const TOUR_SEEN_KEY = "flowpilot-tour-seen-v1";
 
 export const defaultPrefs: AutomationPrefs = {
     autoSave: true,
@@ -54,133 +52,53 @@ export const savePresets = (p: SavedPreset[]) => set(PRESETS_KEY, p);
 export const loadHistory = () => get<BatchRecord[]>(HISTORY_KEY);
 export const saveHistory = (h: BatchRecord[]) => set(HISTORY_KEY, h.slice(0, 30));
 
-export const loadSession = () => get<GoogleSession>(SESSION_KEY);
-export const saveSession = (s: GoogleSession | null) => set(SESSION_KEY, s);
-
-export const loadPlan = () => get<ActivePlan>(PLAN_KEY);
-export const savePlan = (p: ActivePlan) => set(PLAN_KEY, p);
-
-export const loadUsage = () => get<DailyUsage>(USAGE_KEY);
-export const saveUsage = (u: DailyUsage) => set(USAGE_KEY, u);
-
-/** Tour seen flags keyed by Google sub — tour shows only on first login. */
-export const loadTourSeen = async (sub: string): Promise<boolean> => {
-    const map = await get<Record<string, boolean>>(TOUR_SEEN_KEY);
-    return !!map?.[sub];
+/** Tour seen flag (single local flag — no account). */
+export const loadTourSeen = async (): Promise<boolean> => {
+    const seen = await get<boolean>(TOUR_SEEN_KEY);
+    return seen === true;
 };
-export const saveTourSeen = async (sub: string): Promise<void> => {
-    const map = (await get<Record<string, boolean>>(TOUR_SEEN_KEY)) ?? {};
-    map[sub] = true;
-    await set(TOUR_SEEN_KEY, map);
-};
-
-export const PLANS: PlanDef[] = [
-    { id: "free", price: 0, dailyLimit: 50, term: "Free forever", blurb: "50 images per day" },
-    { id: "p3", price: 3, dailyLimit: 100, term: "Lifetime", blurb: "100 images per day, forever" },
-    { id: "p4", price: 4, dailyLimit: 300, term: "Lifetime", blurb: "300 images per day, forever" },
-    { id: "p5", price: 5, dailyLimit: 500, term: "Lifetime", blurb: "500 images per day, forever" },
-    { id: "p7", price: 7, dailyLimit: null, term: "6 months", blurb: "Unlimited images per day for 6 months" },
-    { id: "p10", price: 10, dailyLimit: null, term: "1 year", blurb: "Unlimited images per day for 1 year" },
-];
-
-export function planDef(id: PlanId): PlanDef {
-    return PLANS.find((p) => p.id === id) ?? PLANS[0];
-}
-
-export function planName(id: "free" | "p3" | "p4" | "p5"): string {
-    return id === "free" ? "Free Plan" : id === "p3" ? "Starter Plan" : id === "p4" ? "Plus Plan" : "Pro Plan";
-}
-
-/** Effective plan: expired time-boxed plans fall back to free. */
-export function effectivePlan(plan: ActivePlan | null): ActivePlan {
-    if (!plan) return { base: "free", pass: null };
-    const pass = plan.pass && plan.pass.expiresAt > Date.now() ? plan.pass : plan.pass;
-    return { base: plan.base ?? "free", pass: pass ?? null };
-}
-
-/** Pass lifecycle: active (counts down), expired (ended, base resumed), none. */
-export function passStatus(plan: ActivePlan): "active" | "expired" | "none" {
-    if (!plan.pass) return "none";
-    return plan.pass.expiresAt > Date.now() ? "active" : "expired";
-}
-
-/** Effective daily image limit: null = unlimited (active pass). */
-export function effectiveLimit(plan: ActivePlan): number | null {
-    if (passStatus(plan) === "active") return null;
-    return planDef(plan.base).dailyLimit;
-}
-
-/** Migrate the old single-plan shape to base + pass. */
-export function migratePlan(raw: unknown): ActivePlan | null {
-    if (!raw || typeof raw !== "object") return null;
-    const p = raw as { base?: unknown; pass?: unknown; id?: unknown; startedAt?: unknown; expiresAt?: unknown };
-    if (typeof p.base === "string") {
-        const base = (["free", "p3", "p4", "p5"] as const).includes(p.base as "free") ? (p.base as ActivePlan["base"]) : "free";
-        const pass = p.pass && typeof p.pass === "object" ? (p.pass as PassState) : null;
-        return { base, pass };
-    }
-    if (p.id === "p7" || p.id === "p10") {
-        const startedAt = typeof p.startedAt === "number" ? p.startedAt : Date.now();
-        return {
-            base: "free",
-            pass: {
-                id: p.id,
-                startedAt,
-                expiresAt: typeof p.expiresAt === "number" ? p.expiresAt : planExpiry(p.id, startedAt) ?? startedAt,
-            },
-        };
-    }
-    if (typeof p.id === "string") {
-        const base = (["free", "p3", "p4", "p5"] as const).includes(p.id as "free") ? (p.id as ActivePlan["base"]) : "free";
-        return { base, pass: null };
-    }
-    return null;
-}
+export const saveTourSeen = (): Promise<void> => set(TOUR_SEEN_KEY, true);
 
 export function todayKey(d = new Date()): string {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export function planExpiry(id: PlanId, from = Date.now()): number | null {
-    if (id === "p7") return from + 182 * 86_400_000;
-    if (id === "p10") return from + 365 * 86_400_000;
-    return null;
+/** Local count of images generated today (resets on date change, this browser only). */
+const TODAY_COUNT_KEY = "flowpilot-today-count";
+
+export interface TodayCount {
+    date: string;
+    count: number;
 }
 
-export const PASS_RENEW_DAYS = 15;
-const SIX_MO_MS = 182 * 86_400_000;
-const ONE_YR_MS = 365 * 86_400_000;
+/** In-memory mirror so the count stays correct even if storage writes fail. */
+let memToday: TodayCount | null = null;
 
-/** Renewal price inside the final 15 days: always the $3 difference. */
-export const PASS_RENEW_PRICE = 3;
+export const loadTodayCount = async (): Promise<number> => {
+    const today = todayKey();
+    if (memToday && memToday.date === today) return memToday.count;
+    const rec = await get<TodayCount>(TODAY_COUNT_KEY);
+    const count = rec && rec.date === today ? rec.count : 0;
+    memToday = { date: today, count };
+    return count;
+};
 
-export function passDaysLeft(pass: PassState): number {
-    return Math.max(0, Math.ceil((pass.expiresAt - Date.now()) / 86_400_000));
-}
-
-/** Unlimited-pass purchase state: fresh buy, locked, or renewal window. */
-export type PassOffer = "fresh" | "locked" | "renew";
-
-export function passOffer(plan: ActivePlan): PassOffer {
-    if (passStatus(plan) !== "active" || !plan.pass) return "fresh";
-    return passDaysLeft(plan.pass) <= PASS_RENEW_DAYS ? "renew" : "locked";
-}
-
-/** Prorated tier upgrade cost (new − current). Zero/negative = not an upgrade. */
-export function tierDiff(from: ActivePlan["base"], to: ActivePlan["base"]): number {
-    const prices: Record<ActivePlan["base"], number> = { free: 0, p3: 3, p4: 4, p5: 5 };
-    return prices[to] - prices[from];
-}
-
-/** The single upgrade offered from a base tier (null = top tier / free shows all). */
-export function nextTier(base: ActivePlan["base"]): ActivePlan["base"] | null {
-    if (base === "free") return null;
-    if (base === "p3") return "p4";
-    if (base === "p4") return "p5";
-    return null;
-}
-
-export { SIX_MO_MS, ONE_YR_MS };
+/** Serialized read-modify-write so parallel completions never lose increments. */
+let todayChain: Promise<unknown> = Promise.resolve();
+export const addTodayCount = (n: number): Promise<number> => {
+    const run = todayChain.then(async () => {
+        const today = todayKey();
+        const rec = await get<TodayCount>(TODAY_COUNT_KEY);
+        const stored = rec && rec.date === today ? rec.count : 0;
+        const mem = memToday && memToday.date === today ? memToday.count : 0;
+        const next: TodayCount = { date: today, count: Math.max(stored, mem) + n };
+        memToday = next;
+        await set(TODAY_COUNT_KEY, next);
+        return next.count;
+    });
+    todayChain = run.catch(() => undefined);
+    return run;
+};
 
 export interface ResumeState {
     prompts: string[];

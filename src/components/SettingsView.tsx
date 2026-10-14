@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bell, BookmarkPlus, Download, FolderPen, History, Play, Trash2, Upload } from "lucide-react";
+import { Bell, BookmarkPlus, Download, FolderPen, History, Image as ImageIcon, Play, Trash2, Upload } from "lucide-react";
 import { checkFlowConnection } from "../lib/runQueue";
 import { savePresets, uid } from "../lib/store";
 import { Dropdown } from "./Dropdown";
@@ -12,6 +12,7 @@ interface SettingsViewProps {
     setPrefs: React.Dispatch<React.SetStateAction<AutomationPrefs>>;
     presets: SavedPreset[];
     setPresets: React.Dispatch<React.SetStateAction<SavedPreset[]>>;
+    todayCount: number;
     onApplyPreset: (values: FormValues, prefs: AutomationPrefs) => void;
 }
 
@@ -32,7 +33,7 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
     );
 }
 
-export function SettingsView({ formValues, setFormValues, prefs, setPrefs, presets, setPresets, onApplyPreset }: SettingsViewProps) {
+export function SettingsView({ formValues, setFormValues, prefs, setPrefs, presets, setPresets, todayCount, onApplyPreset }: SettingsViewProps) {
     const [tab, setTab] = useState<Tab>("general");
     const [presetName, setPresetName] = useState("");
     const [diag, setDiag] = useState<string | null>(null);
@@ -159,6 +160,16 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
             </div>
 
             {tab === "general" && (
+                <>
+                <section className="flex items-center gap-3 rounded-2xl border bg-card p-4 shadow-sm">
+                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                        <ImageIcon className="size-5" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-bold tabular-nums">{todayCount} image{todayCount === 1 ? "" : "s"} generated today</span>
+                        <span className="block text-[11px] text-muted-foreground">Resets daily · counted in this browser only</span>
+                    </span>
+                </section>
                 <section className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm">
                     <h2 className="text-sm font-semibold">Default Settings</h2>
                     <div className="text-xs font-medium text-muted-foreground">
@@ -266,6 +277,7 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
                         </div>
                     </div>
                 </section>
+                </>
             )}
 
             {tab === "presets" && (
@@ -321,7 +333,7 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
                         />
                     </div>
                     <p className="-mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                        Google may throttle parallel generation — throttled items retry alone.
+                        If Google flags unusual activity, the run auto-pauses with backoff and retries. 2× parallel + a 5–10s buffer avoids most blocks.
                     </p>
                     <div className="text-xs font-medium text-muted-foreground">
                         <span className="mb-1.5 block">Retries per prompt</span>

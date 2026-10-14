@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBaseName, splitFilename } from "./runQueue";
+import { buildBaseName, friendlyError, isThrottleError, splitFilename, THROTTLE_COOLDOWNS_MS } from "./runQueue";
 import type { AutomationPrefs } from "../types";
 
 const prefs: AutomationPrefs = {
@@ -36,5 +36,28 @@ describe("buildBaseName", () => {
   it("applies the custom pattern when enabled", () => {
     const p = { ...prefs, customFilename: true, filenamePattern: "flow_{index}_{date}" };
     expect(buildBaseName(0, "", "ignored", p)).toMatch(/^flow_001_\d{8}$/);
+  });
+});
+
+describe("throttle handling", () => {
+  it("detects Google throttling signals", () => {
+    expect(isThrottleError("rpc: unusual_activity detected")).toBe(true);
+    expect(isThrottleError("Blocked: Unusual Activity, try again later")).toBe(true);
+    expect(isThrottleError("HTTP 429 rate limited")).toBe(true);
+    expect(isThrottleError("high_traffic, retry")).toBe(true);
+    expect(isThrottleError("no image in reply")).toBe(false);
+    expect(isThrottleError("")).toBe(false);
+  });
+
+  it("cooldowns escalate", () => {
+    expect(THROTTLE_COOLDOWNS_MS.length).toBeGreaterThan(0);
+    for (let i = 1; i < THROTTLE_COOLDOWNS_MS.length; i++) {
+      expect(THROTTLE_COOLDOWNS_MS[i]).toBeGreaterThan(THROTTLE_COOLDOWNS_MS[i - 1]);
+    }
+  });
+
+  it("friendlyError guides throttled users to slow down", () => {
+    expect(friendlyError("unusual_activity")).toContain("2×");
+    expect(friendlyError("HTTP 429")).toContain("2×");
   });
 });

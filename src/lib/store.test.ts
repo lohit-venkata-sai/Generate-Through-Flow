@@ -1,35 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { effectiveLimit, migratePlan, planDef, tierDiff } from "./store";
+import { addTodayCount, defaultBatchName, loadTodayCount, todayKey, uid } from "./store";
 
-describe("plans", () => {
-  it("free allows 50 images a day", () => {
-    expect(planDef("free").dailyLimit).toBe(50);
-    expect(effectiveLimit({ base: "free", pass: null })).toBe(50);
+describe("store utils", () => {
+  it("todayKey formats the local date", () => {
+    expect(todayKey(new Date(2026, 0, 5))).toBe("2026-01-05");
   });
 
-  it("an active pass means unlimited", () => {
-    const plan = {
-      base: "free" as const,
-      pass: { id: "p7" as const, startedAt: Date.now(), expiresAt: Date.now() + 10_000 },
-    };
-    expect(effectiveLimit(plan)).toBeNull();
+  it("uid returns a non-empty id", () => {
+    expect(uid().length).toBeGreaterThan(0);
   });
 
-  it("an expired pass falls back to the base limit", () => {
-    const plan = {
-      base: "p4" as const,
-      pass: { id: "p7" as const, startedAt: 0, expiresAt: 1 },
-    };
-    expect(effectiveLimit(plan)).toBe(300);
+  it("defaultBatchName falls back to Untitled batch", () => {
+    expect(defaultBatchName([])).toBe("Untitled batch");
+    expect(defaultBatchName(["#hero-shot\nA red sky"])).toBe("A red sky");
   });
 
-  it("tierDiff prices upgrades correctly", () => {
-    expect(tierDiff("free", "p4")).toBe(4);
-    expect(tierDiff("p4", "p3")).toBeLessThan(0);
-  });
-
-  it("migratePlan handles legacy shapes", () => {
-    expect(migratePlan({ id: "p4" })).toEqual({ base: "p4", pass: null });
-    expect(migratePlan(null)).toBeNull();
+  it("today counter loads a number and accumulates adds", async () => {
+    const before = await loadTodayCount();
+    expect(typeof before).toBe("number");
+    const after = await addTodayCount(2);
+    expect(after).toBe(before + 2);
+    expect(await loadTodayCount()).toBe(after);
   });
 });

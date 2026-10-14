@@ -23,11 +23,8 @@ interface AutomateViewProps {
     setItems: React.Dispatch<React.SetStateAction<QueueItem[]>>;
     logs: LogEntry[];
     pushLog: (level: LogLevel, msg: string) => void;
-    dailyLimit: number | null;
-    usedToday: number;
-    onConsume: (images: number) => void;
-    onNeedUpgrade: () => void;
     onComplete: (items: QueueItem[], elapsedMs: number) => void;
+    onImagesDone: (images: number) => void;
 }
 
 // Module-level handle so a view switch mid-run never orphans the Stop control.
@@ -39,7 +36,7 @@ let activeRunStart: number | null = null;
 // to a fresh start instead of showing old results.
 let lastRunFingerprint: string | null = null;
 
-export function AutomateView({ formValues, prefs, setPrefs, items, setItems, logs, pushLog, dailyLimit, usedToday, onConsume, onNeedUpgrade, onComplete }: AutomateViewProps) {
+export function AutomateView({ formValues, prefs, setPrefs, items, setItems, logs, pushLog, onComplete, onImagesDone }: AutomateViewProps) {
     const prompts = useMemo(
         () => parsePrompts(formValues.user_prompts, formValues.separator),
         [formValues.user_prompts, formValues.separator],
@@ -56,6 +53,27 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
     const runnerRef = useRef<FlowRunner | null>(null);
     const runStartRef = useRef(0);
     const timerRef = useRef<number | null>(null);
+
+    async function refreshIndex() {
+        try {
+            const r = await checkFlowConnection();
+            setConn("error" in r ? r.error : "Flow tab connected");
+            if (!("error" in r)) {
+                const { index: idx, debug } = await indexProjectCharacters(r.tabId, r.projectId);
+                setCharIndex(idx);
+                pushLog("info", `Project shape: ${debug}`);
+                const names = [...idx.values()].map((l) => l[0]?.handle).filter(Boolean) as string[];
+                pushLog(
+                    names.length ? "success" : "info",
+                    names.length
+                        ? `Character index ready: ${names.length} named (${names.slice(0, 8).join(", ")})`
+                        : "No named characters in this project — @tags will stay plain text.",
+                );
+            }
+        } catch {
+            setConn("Flow check failed");
+        }
+    }
 
     useEffect(() => {
         void refreshIndex();
@@ -117,27 +135,6 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const refreshIndex = async () => {
-        try {
-            const r = await checkFlowConnection();
-            setConn("error" in r ? r.error : "Flow tab connected");
-            if (!("error" in r)) {
-                const { index: idx, debug } = await indexProjectCharacters(r.tabId, r.projectId);
-                setCharIndex(idx);
-                pushLog("info", `Project shape: ${debug}`);
-                const names = [...idx.values()].map((l) => l[0]?.handle).filter(Boolean) as string[];
-                pushLog(
-                    names.length ? "success" : "info",
-                    names.length
-                        ? `Character index ready: ${names.length} named (${names.slice(0, 8).join(", ")})`
-                        : "No named characters in this project — @tags will stay plain text.",
-                );
-            }
-        } catch {
-            setConn("Flow check failed");
-        }
-    };
-
     const hasRun = items.length > 0;
     const displayItems: QueueItem[] = hasRun ? items : prompts.map((raw, index) => {
         const { filename, prompt } = splitFilename(raw);
@@ -188,26 +185,8 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
     };
 
     const runItems = async (initial: QueueItem[]) => {
-        // Daily-limit gate (null = unlimited plan): cap this run to what is left.
-        let queue = initial;
-        if (dailyLimit != null) {
-            const remaining = dailyLimit - usedToday;
-            if (remaining <= 0) {
-                pushLog("error", `Daily limit reached (${dailyLimit} images) — upgrade for more.`);
-                onNeedUpgrade();
-                return;
-            }
-            const perPrompt = Math.max(1, formValues.images_per_prompt);
-            const allowed = Math.max(1, Math.floor(remaining / perPrompt));
-            const runnable = initial.filter((i) => i.status !== "done");
-            if (runnable.length > allowed) {
-                queue = [
-                    ...initial.filter((i) => i.status === "done"),
-                    ...runnable.slice(0, allowed),
-                ];
-                pushLog("info", `Daily limit: running ${allowed} of ${runnable.length} remaining prompts (${remaining} images left today).`);
-            }
-        }
+        // Free build: no daily limits — every prompt runs until done, failed, or stopped.
+        const queue = initial;
         const runner = new FlowRunner();
         runnerRef.current = runner;
         activeRunner = runner;
@@ -225,14 +204,14 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                 prefs,
             }, {
                 onUpdate: (snap) => {
-                    // Merge back so prompts trimmed by the daily cap are not lost.
+                    // Merge back so items keep their identity across updates.
                     setItems((prev) => {
                         const byIndex = new Map(snap.map((s) => [s.index, s]));
                         return prev.map((p) => byIndex.get(p.index) ?? p);
                     });
                 },
                 onLog: pushLog,
-                onItemDone: (n) => onConsume(n),
+                onItemDone: (n) => onImagesDone(n),
                 onSnapshot: (snap) => {
                     saveResume({
                         prompts,
@@ -278,11 +257,6 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
         // so every other item keeps its real state (never faked to done).
         const target = items.find((i) => i.index === index);
         if (!target || running) return;
-        if (dailyLimit != null && usedToday >= dailyLimit) {
-            pushLog("error", `Daily limit reached (${dailyLimit} images) — upgrade for more.`);
-            onNeedUpgrade();
-            return;
-        }
         const solo: QueueItem = { ...target, status: "pending" as const, detail: undefined, images: [] };
         setItems((list) => list.map((i) => (i.index === index ? solo : i)));
         const merge = (snap: QueueItem[]) => {
@@ -306,7 +280,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                 }, {
                     onUpdate: merge,
                     onLog: pushLog,
-                    onItemDone: (n) => onConsume(n),
+                    onItemDone: (n) => onImagesDone(n),
                     onSnapshot: merge,
                 });
             } finally {
@@ -423,7 +397,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                 </button>
                 {!running && (
                     <>
-                    <div className="mt-2 flex items-center gap-2">
+                    <div className="mt-3 flex items-center gap-2">
                         <span className="shrink-0 text-[11px] font-medium text-muted-foreground">Parallel jobs</span>
                         <div className="grid flex-1 grid-cols-4 gap-1.5" role="group" aria-label="Parallel jobs">
                             {([2, 5, 7, 10] as const).map((n) => (
@@ -432,9 +406,15 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                                     type="button"
                                     aria-pressed={(prefs.parallel ?? 2) === n}
                                     onClick={() => setPrefs((p) => ({ ...p, parallel: n }))}
-                                    className={`h-8 rounded-lg border text-xs font-medium transition-colors ${(prefs.parallel ?? 2) === n ? "border-primary bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"}`}
+                                    title={n === 2 ? "Recommended — safest against Google's unusual-activity blocks" : `${n}× parallel jobs`}
+                                    className={`relative h-8 rounded-lg border text-xs font-medium transition-colors ${(prefs.parallel ?? 2) === n ? "border-primary bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"}`}
                                 >
                                     {n}×
+                                    {n === 2 && (
+                                        <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 rounded-full bg-amber-400 px-1.5 py-px text-[8px] font-black tracking-wide whitespace-nowrap text-slate-950">
+                                            RECOMMENDED
+                                        </span>
+                                    )}
                                 </button>
                             ))}
                         </div>
@@ -456,6 +436,9 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                             />
                         </div>
                     </div>
+                    <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                        Lower parallel + a buffer avoids Google's "unusual activity" blocks — throttled items auto-pause and retry.
+                    </p>
                     </>
                 )}
             </section>

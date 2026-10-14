@@ -28,7 +28,7 @@ export default defineManifest({
     },
 
 
-    permissions: ["sidePanel", "storage", "scripting", "tabs", "downloads", "notifications", "identity"],
+    permissions: ["sidePanel", "storage", "scripting", "tabs", "downloads", "notifications"],
 
     side_panel: {
         default_path: "index.html"

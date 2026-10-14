@@ -1,19 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Moon, Settings as SettingsIcon, Sparkles, Sun } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, History, Moon, Settings as SettingsIcon, Sparkles, Sun } from 'lucide-react'
 import './App.css'
 import { AgentView } from './components/AgentView'
-import { AuthGate } from './components/AuthGate'
 import { AutomateView } from './components/AutomateView'
+import { HistoryView } from './components/HistoryView'
 import { ModeTabs } from './components/ModeTabs'
-import { PlansView } from './components/PlansView'
-import { ProfileView } from './components/ProfileView'
 import { SettingsView } from './components/SettingsView'
 import { SetupView } from './components/SetupView'
 import { TourOverlay } from './components/TourOverlay'
-import { signOut } from './lib/auth'
-import { loadServerUrl, serverCheckout, serverConsume, serverGetProfile, serverGetUsage, serverVerify, profileToPlan } from './lib/server'
-import { defaultBatchName, defaultPrefs, effectiveLimit, loadHistory, loadPlan, loadPrefs, loadPresets, loadSession, loadTourSeen, loadUsage, migratePlan, PASS_RENEW_DAYS, saveHistory, savePlan, savePrefs, savePresets, saveTourSeen, saveUsage, tierDiff, todayKey, uid } from './lib/store'
-import type { ActivePlan, AppView, AutomationPrefs, BatchRecord, DailyUsage, FormValues, GoogleSession, LogEntry, LogLevel, Mode, QueueItem, SavedPreset } from './types'
+import { defaultBatchName, defaultPrefs, addTodayCount, loadHistory, loadPrefs, loadPresets, loadTodayCount, loadTourSeen, saveHistory, savePrefs, savePresets, saveTourSeen, uid } from './lib/store'
+import type { AppView, AutomationPrefs, BatchRecord, FormValues, LogEntry, LogLevel, Mode, QueueItem, SavedPreset } from './types'
 
 const STORAGE_KEY = "flowpilot-form-values"
 
@@ -82,22 +78,14 @@ function App() {
   const [isFormReady, setIsFormReady] = useState(false)
   const [queueItems, setQueueItems] = useState<QueueItem[]>([])
   const [queueLogs, setQueueLogs] = useState<LogEntry[]>([])
-  const [session, setSession] = useState<GoogleSession | null>(null)
-  const [sessionChecked, setSessionChecked] = useState(false)
   const [showTour, setShowTour] = useState(false)
-  const [profileOpen, setProfileOpen] = useState(false)
-  const [plansOpen, setPlansOpen] = useState(false)
-  const [plan, setPlan] = useState<ActivePlan>({ base: "free", pass: null })
-  const [usage, setUsage] = useState<DailyUsage>({ date: todayKey(), used: 0 })
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [todayCount, setTodayCount] = useState(0)
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const savedTheme = localStorage.getItem("flowpilot-theme")
     if (savedTheme === "light" || savedTheme === "dark") return savedTheme
     return "dark"
   })
-  const [billingBusy, setBillingBusy] = useState(false)
-  const [billingMsg, setBillingMsg] = useState<string | null>(null)
-  const planRef = useRef<ActivePlan>({ base: "free", pass: null })
-  planRef.current = plan
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark")
@@ -130,20 +118,11 @@ function App() {
     }).catch(() => undefined)
     loadPresets().then((p) => p && setPresets(p)).catch(() => undefined)
     loadHistory().then((h) => h && setHistory(h)).catch(() => undefined)
-    loadPlan().then((p) => {
-      const migrated = migratePlan(p);
-      if (migrated) setPlan(migrated);
+    loadTodayCount().then((c) => setTodayCount(c)).catch(() => undefined)
+    // First-run tour only (single local flag — no account).
+    loadTourSeen().then((seen) => {
+      if (!seen) setShowTour(true)
     }).catch(() => undefined)
-    loadUsage().then((u) => {
-      const today = todayKey();
-      setUsage(u && u.date === today ? u : { date: today, used: 0 });
-    }).catch(() => undefined)
-    loadSession().then((s) => {
-      setSession(s);
-      // Returning user with an existing session → never auto-show the tour.
-      // Mark them as seen so a later sign-out/sign-in doesn't trigger it either.
-      if (s?.sub) void saveTourSeen(s.sub).catch(() => undefined);
-    }).catch(() => undefined).finally(() => setSessionChecked(true))
   }, [])
 
   useEffect(() => {
@@ -157,136 +136,15 @@ function App() {
   const pushQueueLog = (level: LogLevel, msg: string) =>
     setQueueLogs((l) => [...l.slice(-199), { ts: Date.now(), level, msg }])
 
-  const consumeUsage = (images: number) => {
-    setUsage((prev) => {
-      const today = todayKey();
-      const next = prev.date === today
-        ? { date: today, used: prev.used + images }
-        : { date: today, used: images };
-      saveUsage(next).catch(() => undefined);
-      return next;
-    });
-    // Mirror to the server best-effort (local stays authoritative offline).
-    const sub = session?.sub;
-    if (sub) {
-      void (async () => {
-        const base = await loadServerUrl();
-        await serverConsume(base, sub, images);
-      })();
-    }
-  };
-
-  // Once signed in, verify with the server (upserts profile) and prefer
-  // server-side usage when reachable. Local storage remains the fallback.
-  const sessionSub = session?.sub;
-  const sessionToken = session?.accessToken;
-  useEffect(() => {
-    if (!sessionChecked || !sessionSub) return;
-    void (async () => {
-      const base = await loadServerUrl();
-      if (sessionToken) void serverVerify(base, sessionToken);
-      const remote = await serverGetUsage(base, sessionSub);
-      if (remote && remote.date === todayKey()) setUsage(remote);
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionChecked, sessionSub]);
-
-  const activePlan = plan;
-  const dailyLimit = effectiveLimit(activePlan);
-
-  const handleSignedIn = () => {
-    loadSession().then(async (s) => {
-      setSession(s);
-      // Tour only for brand-new users on their first login.
-      if (!s?.sub) return;
-      const seen = await loadTourSeen(s.sub).catch(() => false);
-      if (!seen) setShowTour(true);
-    }).catch(() => undefined);
+  // Images-generated-today counter (local only). addTodayCount serializes
+  // internally, so parallel completions never lose increments.
+  const bumpToday = (n: number) => {
+    if (n > 0) void addTodayCount(n).then((c) => setTodayCount(c)).catch(() => undefined);
   };
 
   const handleTourDone = () => {
-    const sub = session?.sub;
-    if (sub) void saveTourSeen(sub).catch(() => undefined);
+    void saveTourSeen().catch(() => undefined);
     setShowTour(false);
-  };
-
-  const handleSignOut = async () => {
-    await signOut();
-    setSession(null);
-    setProfileOpen(false);
-    setView("main");
-  };
-
-  // Paid checkout via the server (payment page opened in a real tab —
-  // MV3 blocks remote checkout.js inside the panel). Polls the server
-  // profile until the webhook applies the plan, then saves it.
-  // Cancellable: closing the dialog or unmounting stops the poll.
-  const pollCancel = useRef(false);
-  useEffect(() => () => { pollCancel.current = true; }, []);
-  const cancelCheckout = () => {
-    pollCancel.current = true;
-    setBillingBusy(false);
-    setBillingMsg(null);
-  };
-  const startCheckout = async (planId: "p3" | "p4" | "p5" | "p7" | "p10", kind: "buy" | "renew") => {
-    const sub = session?.sub;
-    if (!sub) {
-      setBillingMsg("Sign in again to start checkout.");
-      return;
-    }
-    pollCancel.current = false;
-    setBillingBusy(true);
-    setBillingMsg("Creating secure checkout…");
-    try {
-      const base = await loadServerUrl();
-      const checkout = await serverCheckout(base, sub, planId, kind, session?.email);
-      if (!checkout?.url) {
-        setBillingMsg("Could not start checkout — is the server running?");
-        return;
-      }
-      try {
-        await chrome.tabs.create({ url: checkout.url });
-      } catch {
-        window.open(checkout.url, "_blank");
-      }
-      setBillingMsg("Waiting for payment — complete it in the opened tab…");
-      const before = JSON.stringify(planRef.current);
-      const deadline = Date.now() + 6 * 60_000;
-      while (Date.now() < deadline && !pollCancel.current) {
-        await new Promise((r) => setTimeout(r, 4000));
-        if (pollCancel.current) break;
-        const remote = await serverGetProfile(base, sub);
-        if (remote && JSON.stringify(profileToPlan(remote)) !== before) {
-          const next = profileToPlan(remote);
-          setPlan(next);
-          await savePlan(next);
-          setBillingMsg("Payment successful — your plan is active!");
-          return;
-        }
-      }
-      if (!pollCancel.current) {
-        setBillingMsg("No payment detected yet — if you paid, reopen Plans in a moment.");
-      }
-    } finally {
-      setBillingBusy(false);
-    }
-  };
-
-  const handleChooseBase = async (id: ActivePlan["base"]) => {
-    if (id === "free" || tierDiff(plan.base, id) < 0) return;
-    void startCheckout(id, "buy");
-  };
-
-  const handleChoosePass = async (id: "p7" | "p10") => {
-    void startCheckout(id, "buy");
-  };
-
-  const handleRenewPass = async () => {
-    // Final-15-days renewal only, same rule as before — payment happens
-    // through checkout, the webhook extends the expiry.
-    if (!plan.pass || plan.pass.expiresAt <= Date.now()) return;
-    if (plan.pass.expiresAt - Date.now() > PASS_RENEW_DAYS * 86_400_000) return;
-    void startCheckout(plan.pass.id, "renew");
   };
 
   const handleComplete = async (items: QueueItem[], elapsedMs: number) => {
@@ -353,24 +211,11 @@ function App() {
       user_prompts: text,
       total_prompts: b.prompts.length,
     }));
-    setProfileOpen(false);
+    setHistoryOpen(false);
     setView("main");
   };
 
   const backLabel = view === "settings" ? "Back to Main" : mode === "auto" ? "Back to Queue" : "Back to Main";
-  const avatarLabel = (session?.name || session?.email || "?").slice(0, 1).toUpperCase();
-
-  if (!sessionChecked) {
-    return <div className="min-h-screen bg-background" />;
-  }
-
-  if (!session) {
-    return (
-      <div className="min-h-screen overflow-x-clip bg-background text-foreground">
-        <AuthGate onSignedIn={handleSignedIn} />
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen overflow-x-clip bg-background text-foreground">
@@ -389,18 +234,12 @@ function App() {
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => setProfileOpen(true)}
-              aria-label="Profile"
-              title="Profile"
-              className="flex size-10 items-center justify-center overflow-hidden rounded-full border bg-card shadow-sm transition-colors hover:border-primary/60"
+              onClick={() => setHistoryOpen(true)}
+              aria-label="History"
+              title="History"
+              className="flex size-10 items-center justify-center rounded-xl border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
             >
-              {session.picture ? (
-                <img src={session.picture} alt="" className="size-full object-cover" />
-              ) : (
-                <span className="flex size-full items-center justify-center bg-primary text-sm font-bold text-primary-foreground">
-                  {avatarLabel}
-                </span>
-              )}
+              <History className="size-4" />
             </button>
             <button
               type="button"
@@ -422,6 +261,19 @@ function App() {
             </button>
           </div>
         </header>
+
+        {view !== "main" && (
+          <div className="mb-4 flex justify-start">
+            <button
+              type="button"
+              onClick={() => setView("main")}
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-primary/50 px-3 text-xs font-medium text-primary hover:bg-primary/10"
+            >
+              <ArrowLeft className="size-3.5" />
+              {backLabel}
+            </button>
+          </div>
+        )}
 
         {(view === "prompt" || view === "auto") && (
           <div className="mb-4">
@@ -453,11 +305,8 @@ function App() {
               setItems={setQueueItems}
               logs={queueLogs}
               pushLog={pushQueueLog}
-              dailyLimit={dailyLimit}
-              usedToday={usage.used}
-              onConsume={consumeUsage}
-              onNeedUpgrade={() => setPlansOpen(true)}
               onComplete={handleComplete}
+              onImagesDone={bumpToday}
             />
           )}
           {view === "settings" && (
@@ -468,36 +317,21 @@ function App() {
               setPrefs={setPrefs}
               presets={presets}
               setPresets={setPresets}
+              todayCount={todayCount}
               onApplyPreset={(values, p) => { setFormValues({ ...values }); setPrefs({ ...p }); setView("main"); }}
             />
           )}
-          {view !== "main" && (
-            <button
-              type="button"
-              onClick={() => setView("main")}
-              className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border border-primary/50 text-xs font-medium text-primary hover:bg-primary/10"
-            >
-              <ArrowLeft className="size-3.5" />
-              {backLabel}
-            </button>
-          )}
         </main>
         <p className="mt-auto pt-6 text-center text-[11px] text-muted-foreground">
-          Runs directly in your Flow project tab — no servers.
+          Free forever · runs locally in your Flow project tab — no servers.
         </p>
       </div>
       {showTour && <TourOverlay onDone={handleTourDone} />}
-      {profileOpen && session && (
-        <ProfileView
-          session={session}
-          plan={activePlan}
-          usage={usage.date === todayKey() ? usage : { date: todayKey(), used: 0 }}
+      {historyOpen && (
+        <HistoryView
           history={history}
-          onOpenPlans={() => { setProfileOpen(false); setPlansOpen(true); }}
-          onRenewPass={handleRenewPass}
-          onReplayTour={() => { setProfileOpen(false); setShowTour(true); }}
-          onSignOut={handleSignOut}
-          onClose={() => setProfileOpen(false)}
+          onReplayTour={() => { setHistoryOpen(false); setShowTour(true); }}
+          onClose={() => setHistoryOpen(false)}
           onClearHistory={() => { setHistory([]); saveHistory([]).catch(() => undefined); }}
           onDeleteBatch={(id) => {
             setHistory((h) => {
@@ -507,16 +341,6 @@ function App() {
             });
           }}
           onLoadBatch={handleLoadBatch}
-        />
-      )}
-      {plansOpen && (
-        <PlansView
-          plan={activePlan}
-          billing={{ busy: billingBusy, msg: billingMsg, onCancel: cancelCheckout }}
-          onChooseBase={handleChooseBase}
-          onBuyPass={handleChoosePass}
-          onRenewPass={handleRenewPass}
-          onClose={() => { if (!billingBusy) setBillingMsg(null); setPlansOpen(false); }}
         />
       )}
     </div>

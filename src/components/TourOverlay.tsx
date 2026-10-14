@@ -26,7 +26,7 @@ const STEPS = [
     {
         icon: <Play className="size-5" />,
         title: "4 · Generate",
-        body: "Open a Flow project tab, press Start, and watch the queue. Everything runs locally — no servers, no quotas beyond your daily limit.",
+        body: "Open a Flow project tab, press Start, and watch the queue. Everything runs locally in your browser — free, with no servers and no limits.",
     },
 ];
 

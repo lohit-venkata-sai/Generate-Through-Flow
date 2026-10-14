@@ -3,11 +3,11 @@
 // batchexecute(generateImage) -> preview bytes -> download. Stops only on
 // user Stop (or stopOnError). Emits timestamped logs for the Logs view.
 
-import { flowAbort, flowBatchExecute, flowGetProjectId, flowGetRecaptcha, flowGetToken, flowImageArtifacts, flowListWorkflows, flowRevokeUrl, flowScrapeLibrary, flowThumb } from "./flowPage";
+import { flowAbort, flowAgentPost, flowBatchExecute, flowGetProjectId, flowGetRecaptcha, flowGetToken, flowImageArtifacts, flowListWorkflows, flowRevokeUrl, flowScrapeLibrary, flowThumb } from "./flowPage";
 import { bgDownload, anchorDownload } from "./downloads";
 import { buildCharIndex, extractTags, handleVariants, splitPromptParts, type CharIndex, type ResolvedRef } from "./flowRefs";
 import { FLOW_ASPECT_CODES, FLOW_MODEL_CODES, FLOW_RECAPTCHA_KEY, FLOW_TAB_URLS } from "./flowModels";
-import { FLOW_RPC, resolveRpcid } from "./flowRpc";
+import { FLOW_RPC, extractFlowImageUrls, mineAgentToken, resolveRpcid } from "./flowRpc";
 import type { AutomationPrefs, GeneratedImage, LogEntry, LogLevel, QueueItem, QueueStatus } from "../types";
 
 export type { QueueItem, QueueStatus };
@@ -129,6 +129,19 @@ async function sleepBuffer(ms: number, isStopped: () => boolean): Promise<void> 
     }
 }
 
+/** Google-side throttling signals: these mean "slow down", not "broken". */
+export function isThrottleError(msg: string): boolean {
+    const t = (msg || "").toLowerCase();
+    return t.includes("unusual_activity") || t.includes("unusual activity")
+        || t.includes("high_traffic") || t.includes("high traffic")
+        || t.includes("rate limited") || t.includes("rate_limit")
+        || t.includes("429") || t.includes("resource_exhausted")
+        || t.includes("try again later") || t.includes("try again shortly");
+}
+
+/** Cooldown before retrying a throttled request (escalates per attempt). */
+export const THROTTLE_COOLDOWNS_MS = [45_000, 90_000, 180_000];
+
 async function callRpc(tabId: number, op: string, args: Record<string, unknown>, projectId: string) {
     const def = FLOW_RPC[op];
     if (!def) return { error: `unknown op "${op}"` };
@@ -197,35 +210,7 @@ export class FlowRunner {
         if (this.tabId != null) void this.abortTab(this.tabId).catch(() => undefined);
     }
 
-    /** Reload the Flow project tab and wait until it finishes loading. */
-    private async reloadFlowTab(tabId: number, log: (level: LogLevel, msg: string) => void): Promise<void> {
-        try {
-            await chrome.tabs.reload(tabId);
-        } catch (e) {
-            log("error", `Flow tab refresh failed (${(e as Error).message}) — continuing without refresh.`);
-            return;
-        }
-        const deadline = Date.now() + 30_000;
-        while (Date.now() < deadline) {
-            if (this.stopped) return;
-            try {
-                const tab = await chrome.tabs.get(tabId);
-                if (tab.status === "complete") {
-                    // Extra settle delay so the Flow app boots before the next request.
-                    await new Promise((r) => setTimeout(r, 2000));
-                    if (this.stopped) return;
-                    return;
-                }
-            } catch {
-                log("error", "Flow tab closed during refresh — stopping.");
-                this.stop();
-                return;
-            }
-            await new Promise((r) => setTimeout(r, 500));
-        }
-        log("error", "Flow tab refresh timed out — continuing anyway.");
-    }
-
+    /** Abort page requests in flight (Stop button helper). */
     async abortTab(tabId: number) {
         try {
             await exec(tabId, flowAbort);
@@ -353,7 +338,23 @@ export class FlowRunner {
             } catch (e) {
                 lastError = (e as Error).message;
                 if (this.stopped) break;
-                log("error", `Error ${tag}: ${lastError}${attempt < attempts ? ` — retrying (${attempt}/${attempts})…` : ""}`);
+                if (attempt < attempts) {
+                    if (isThrottleError(lastError)) {
+                        // Google flagged the burst: pause with backoff instead of
+                        // hammering, or the block just extends itself.
+                        const waitMs = THROTTLE_COOLDOWNS_MS[Math.min(attempt - 1, THROTTLE_COOLDOWNS_MS.length - 1)];
+                        log("error", `${tag}: Google flagged unusual activity — cooling down ${Math.round(waitMs / 1000)}s before retry (${attempt}/${attempts}). Tip: 2× parallel + a buffer avoids this.`);
+                        await sleepBuffer(waitMs + Math.floor(Math.random() * 10_000), () => this.stopped);
+                        if (this.stopped) break;
+                    } else {
+                        log("error", `Error ${tag}: ${lastError} — retrying (${attempt}/${attempts})…`);
+                    }
+                } else {
+                    log("error", `Error ${tag}: ${lastError}`);
+                    if (isThrottleError(lastError)) {
+                        log("error", `${tag}: wait a few minutes, then retry with 2× parallel and a 5–10s buffer.`);
+                    }
+                }
             }
         }
         if (item.status !== "done") {
@@ -414,34 +415,17 @@ export class FlowRunner {
 
         let cursor = 0;
         let launched = 0;
-        // Refresh the Flow project tab every N generated images to keep long
-        // batches healthy (fresh XSRF/recaptcha state, freed page memory).
-        const RELOAD_EVERY_IMAGES = 5;
-        let doneImages = 0;
-        let nextReloadAt = RELOAD_EVERY_IMAGES;
-        let reloadInFlight: Promise<void> | null = null;
-        const ctx = { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone: (n: number) => { doneImages += n; ev.onItemDone?.(n); } };
-        const maybeReload = async () => {
-            if (doneImages < nextReloadAt) return;
-            if (reloadInFlight) {
-                await reloadInFlight;
-                return;
+        // No mid-run tab refresh: the Flow tab stays untouched for the whole
+        // batch so in-flight API calls are never interrupted.
+        const ctx = { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone: (n: number) => ev.onItemDone?.(n) };
+        const worker = async (slot: number) => {
+            // Stagger worker starts so the opening burst doesn't trip Google's
+            // abuse detection ("unusual activity").
+            if (slot > 0) {
+                await sleepBuffer(slot * 1500, () => this.stopped);
+                if (this.stopped) return;
             }
-            const remaining = state.some((i) => i.status !== "done" && i.status !== "error");
-            if (!remaining || this.stopped) return;
-            nextReloadAt += RELOAD_EVERY_IMAGES;
-            log("info", `Refreshing Flow tab (every ${RELOAD_EVERY_IMAGES} images)…`);
-            reloadInFlight = this.reloadFlowTab(tabId, log);
-            try {
-                await reloadInFlight;
-            } finally {
-                reloadInFlight = null;
-            }
-            if (!this.stopped) log("info", "Flow tab refreshed — resuming.");
-        };
-        const worker = async () => {
             while (!this.stopped) {
-                if (reloadInFlight) await reloadInFlight;
                 if (this.stopped) break;
                 const next = state.find((_, k) => k >= cursor && state[k].status !== "done");
                 if (!next) break;
@@ -452,7 +436,6 @@ export class FlowRunner {
                     if (this.stopped) break;
                 }
                 await this.runOne(next, ctx);
-                await maybeReload();
                 if (!this.stopped && next.status === "error" && opts.prefs.stopOnError) {
                     log("error", "Stopping on first error (Automation setting).");
                     this.stop();
@@ -460,7 +443,7 @@ export class FlowRunner {
                 }
             }
         };
-        await Promise.all(Array.from({ length: Math.min(parallel, state.length) }, () => worker()));
+        await Promise.all(Array.from({ length: Math.min(parallel, state.length) }, (_, slot) => worker(slot)));
         if (this.stopped) {
             log("info", "Stopped by user.");
         }
@@ -478,14 +461,71 @@ export function logEntry(level: LogLevel, msg: string): LogEntry {
     return { ts: Date.now(), level, msg };
 }
 
+const AGENT_SERVICE_PATH = "/_/AiSandboxAngularFrontend/data/google.internal.labs.aisandbox.proto.flow.agent.v1.FlowCreationAgentService/StreamChat";
+
+export interface AgentSubmitResult {
+    /** Session token mined from the init response (null when mining failed). */
+    token: string | null;
+    /** Raw StreamChat response text (may be large — slice before displaying). */
+    text: string;
+    /** flow-content image URLs harvested from the response. */
+    urls: string[];
+    error?: string;
+}
+
+/**
+ * EXPERIMENTAL agent-path submission: init via batchexecute (WuwhI) to mine
+ * the session token, then POST the message to StreamChat. Returns raw text +
+ * any image URLs found. The agent may reply asking for confirmation instead
+ * of generating — that shows up in `text` for the caller to handle.
+ */
+export async function submitAgentMessage(
+    tabId: number,
+    projectId: string,
+    messageText: string,
+    userAgent: string,
+    log?: (level: LogLevel, msg: string) => void,
+): Promise<AgentSubmitResult> {
+    const say = (level: LogLevel, msg: string) => log?.(level, msg);
+    const initRpc = resolveRpcid("agentInit");
+    if (!initRpc) return { token: null, text: "", urls: [], error: '"agentInit" is not mapped yet' };
+    say("info", "Agent path: opening session…");
+    const initPayload = FLOW_RPC.agentInit.build({ projectId, userAgent });
+    const init = await exec(tabId, flowBatchExecute, [initRpc, JSON.stringify(initPayload), `/project/${projectId}`]) as
+        | { ok?: boolean; data?: unknown; error?: string }
+        | undefined;
+    if (!init || init.error) {
+        return { token: null, text: "", urls: [], error: init?.error || "agent init failed" };
+    }
+    const token = mineAgentToken(init.data);
+    if (!token) {
+        say("error", "Agent path: no session token in init response — paste it from DevTools so the miner can learn it.");
+        return { token: null, text: JSON.stringify(init.data).slice(0, 2000), urls: [], error: "no agent token in init response" };
+    }
+    say("info", "Agent path: session open, sending message…");
+    const chatPayload = FLOW_RPC.agentChat.build({ projectId, token, messageText });
+    const res = await exec(tabId, flowAgentPost, [AGENT_SERVICE_PATH, JSON.stringify(chatPayload)]) as
+        | { status?: number; text?: string; error?: string }
+        | undefined;
+    if (!res || res.error) {
+        return { token, text: res?.text || "", urls: [], error: res?.error || "agent post failed" };
+    }
+    const text = res.text || "";
+    const urls = extractFlowImageUrls(text);
+    say(urls.length ? "success" : "info", urls.length
+        ? `Agent path: ${urls.length} image URL(s) in response.`
+        : "Agent path: sent, no image URLs in response yet — read the transcript.");
+    return { token, text, urls };
+}
+
 /** Short human-readable label for a raw RPC/queue error (full text stays in the tooltip). */
 export function friendlyError(detail?: string): string {
     if (!detail) return "Failed";
     const t = detail.toLowerCase();
-    if (t.includes("high_traffic")) return "Google is busy (high traffic) — retry later";
-    if (t.includes("unusual_activity") || t.includes("unusual activity")) return "Blocked by Google (unusual activity)";
+    if (t.includes("high_traffic")) return "Google is busy (high traffic) — wait, then retry at 2×";
+    if (t.includes("unusual_activity") || t.includes("unusual activity")) return "Blocked by Google (unusual activity) — wait, then retry at 2× + buffer";
     if (t.includes("per_model_daily_quota") || t.includes("daily_quota")) return "Daily limit — switch model";
-    if (t.includes("rate limited") || t.includes("429")) return "Rate limited — try again shortly";
+    if (t.includes("rate limited") || t.includes("429")) return "Rate limited — auto-cooling down, or retry at 2×";
     if (t.includes("permission") || t.includes("403") || t.includes("auth") || t.includes("sign in")) return "Session expired — reload the Flow tab";
     if (t.includes("recaptcha")) return "reCAPTCHA blocked — reload the Flow tab";
     if (t.includes("no image in reply")) return "Flow returned no image — retry";

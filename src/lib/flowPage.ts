@@ -352,6 +352,62 @@ export function flowRevokeUrl(url: string): void {
     } catch { /* ignore */ }
 }
 
+export interface AgentPostResult {
+    status?: number;
+    text?: string;
+    error?: string;
+}
+
+/**
+ * POST raw JSON to a Flow data-service path (e.g. the agent StreamChat
+ * endpoint). Same auth as batchexecute: page cookies + bl/f.sid query.
+ * Aborts with the shared Stop set. Returns the full response text.
+ */
+export async function flowAgentPost(servicePath: string, body: string): Promise<AgentPostResult> {
+    try {
+        const w = (window as unknown as { WIZ_global_data?: Record<string, string> }).WIZ_global_data || {};
+        const bl = w.cfb2h || "";
+        const fsid = w.FdrFJe || "";
+        const hl = w.NsqkG || document.documentElement.lang || "en";
+        const um = location.pathname.match(/^\/u\/(\d+)\//);
+        const base = location.origin + (um ? "/u/" + um[1] : "");
+        const qs =
+            "bl=" + encodeURIComponent(bl) +
+            "&f.sid=" + encodeURIComponent(fsid) +
+            "&hl=" + encodeURIComponent(hl) +
+            "&_reqid=" + (Math.floor(Math.random() * 900000) + 100000) +
+            "&rt=c";
+        const ac = new AbortController();
+        const holder = window as unknown as { __fpAborters?: Set<AbortController> };
+        (holder.__fpAborters || (holder.__fpAborters = new Set())).add(ac);
+        let r: Response;
+        try {
+            r = await window.fetch.call(window, base + servicePath + "?" + qs, {
+                method: "POST",
+                credentials: "include",
+                signal: ac.signal,
+                headers: {
+                    "Content-Type": "application/json",
+                    "X-Same-Domain": "1",
+                },
+                body,
+            });
+        } catch (e) {
+            const err = e as Error;
+            return { error: err.name === "AbortError" ? "aborted" : err.message };
+        } finally {
+            try {
+                holder.__fpAborters.delete(ac);
+            } catch { /* ignore */ }
+        }
+        const txt = await r.text();
+        if (!r.ok) return { status: r.status, text: txt.slice(0, 2000), error: "HTTP " + r.status };
+        return { status: r.status, text: txt };
+    } catch (e) {
+        return { error: (e as Error).message };
+    }
+}
+
 export interface LibraryTile {
     title: string;
     mediaId: string;
