@@ -16,7 +16,7 @@ export const defaultPrefs: AutomationPrefs = {
     notifyDone: false,
     stopOnError: false,
     retries: 1,
-    parallel: 2,
+    parallel: 1,
     bufferSec: 0,
 };
 

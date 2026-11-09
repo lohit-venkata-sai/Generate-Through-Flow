@@ -25,7 +25,7 @@ export interface AutomationPrefs {
     notifyDone: boolean;
     stopOnError: boolean;
     retries: number;
-    parallel: 2 | 5 | 7 | 10;
+    parallel: 1 | 2 | 5 | 7 | 10;
     bufferSec: number;
 }
 

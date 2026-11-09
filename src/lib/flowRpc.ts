@@ -5,7 +5,7 @@
 export interface RpcDef {
     rpcid: string;
     build: (args: Record<string, unknown>) => unknown[];
-    parse: (data: unknown) => { urls: string[]; ids: string[]; workflowId: string | null };
+    parse: (data: unknown) => { urls: string[]; ids: string[]; workflowId: string | null; b64?: string };
 }
 
 /** Local override for simulating a server-side rpcid rotation (no backend). */
@@ -14,6 +14,7 @@ export const LOCAL_RPC_OVERRIDES: Record<string, string | null> = {
     createWorkflow: null,
     renameWorkflow: null,
     agentInit: null,
+    upscaleImage: null,
 };
 
 function uuid(): string {
@@ -93,6 +94,23 @@ export const FLOW_RPC: Record<string, RpcDef> = {
         parse: () => ({ urls: [], ids: [], workflowId: null }),
     },
     /**
+     * Server-side 2K upscale: [mediaId, resolution, recaptchaBlock].
+     * Shape mirrored from the reference extension (upscale kind with
+     * withProject:false, i.e. no workflow id in the captcha block).
+     * rpcid is intentionally UNMAPPED ("") — capture it from DevTools
+     * batchexecute traffic (same process used for "ogiZ0b") and set it via
+     * LOCAL_RPC_OVERRIDES.upscaleImage (or fill it in here). Until then the
+     * 2K quality setting falls back to standard with a one-time log.
+     */
+    upscaleImage: {
+        rpcid: "",
+        build: (e) => {
+            const recaptchaBlock = [null, 22, null, null, null, null, null, null, null, null, [e.recaptcha, 1]];
+            return [e.mediaId, (e.resolution as number) ?? 1, recaptchaBlock];
+        },
+        parse: (e) => ({ urls: [], ids: [], workflowId: null, b64: mineUpscaleB64(e) ?? undefined }),
+    },
+    /**
      * Agent session init (same batchexecute channel as everything else).
      * Captured shape: [[["PROMPT_BOX_SUBMISSION",[uuid,[sec,nanos],null,env,experiments]]]].
      * The response is mined for the opaque session token StreamChat needs.
@@ -157,6 +175,32 @@ function agentEnv(userAgent: string, projectId: string, paygate: string): unknow
         ["PROJECT_ID", str(projectId)],
         ["MEDIA_GENERATION_PAYGATE_TIER", str(paygate)],
     ];
+}
+
+/**
+ * Heuristic: the upscaled PNG bytes are by far the longest base64 blob in
+ * the upscale response. Returns the longest base64-looking string found.
+ */
+export function mineUpscaleB64(data: unknown): string | null {
+    const found: string[] = [];
+    const walk = (n: unknown): void => {
+        if (typeof n === "string") {
+            if (n.length >= 10_000 && /^[A-Za-z0-9+/=\s]+$/.test(n.slice(0, 4000))) {
+                found.push(n.replace(/\s+/g, ""));
+            }
+            return;
+        }
+        if (Array.isArray(n)) {
+            for (const el of n) walk(el);
+            return;
+        }
+        if (n && typeof n === "object") {
+            for (const k of Object.keys(n)) walk((n as Record<string, unknown>)[k]);
+        }
+    };
+    walk(data);
+    found.sort((a, b) => b.length - a.length);
+    return found[0] ?? null;
 }
 
 /**

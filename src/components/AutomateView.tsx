@@ -200,6 +200,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                 model: formValues.model,
                 aspectRatio: formValues.aspect_ratio,
                 imagesPerPrompt: formValues.images_per_prompt,
+                quality: formValues.quality,
                 folder: formValues.file_name_pattern || "GenerateThroughFlow",
                 prefs,
             }, {
@@ -275,6 +276,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                     model: formValues.model,
                     aspectRatio: formValues.aspect_ratio,
                     imagesPerPrompt: formValues.images_per_prompt,
+                    quality: formValues.quality,
                     folder: formValues.file_name_pattern || "GenerateThroughFlow",
                     prefs,
                 }, {
@@ -399,20 +401,20 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                     <>
                     <div className="mt-3 flex items-center gap-2">
                         <span className="shrink-0 text-[11px] font-medium text-muted-foreground">Parallel jobs</span>
-                        <div className="grid flex-1 grid-cols-4 gap-1.5" role="group" aria-label="Parallel jobs">
-                            {([2, 5, 7, 10] as const).map((n) => (
+                        <div className="grid flex-1 grid-cols-5 gap-1.5" role="group" aria-label="Parallel jobs">
+                            {([1, 2, 5, 7, 10] as const).map((n) => (
                                 <button
                                     key={n}
                                     type="button"
-                                    aria-pressed={(prefs.parallel ?? 2) === n}
+                                    aria-pressed={(prefs.parallel ?? 1) === n}
                                     onClick={() => setPrefs((p) => ({ ...p, parallel: n }))}
-                                    title={n === 2 ? "Recommended — safest against Google's unusual-activity blocks" : `${n}× parallel jobs`}
-                                    className={`relative h-8 rounded-lg border text-xs font-medium transition-colors ${(prefs.parallel ?? 2) === n ? "border-primary bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"}`}
+                                    title={n === 1 ? "Safest — sequential, avoids Google's unusual-activity blocks" : `${n}× parallel jobs`}
+                                    className={`relative h-8 rounded-lg border text-xs font-medium transition-colors ${(prefs.parallel ?? 1) === n ? "border-primary bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"}`}
                                 >
                                     {n}×
-                                    {n === 2 && (
+                                    {n === 1 && (
                                         <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 rounded-full bg-amber-400 px-1.5 py-px text-[8px] font-black tracking-wide whitespace-nowrap text-slate-950">
-                                            RECOMMENDED
+                                            BEST
                                         </span>
                                     )}
                                 </button>

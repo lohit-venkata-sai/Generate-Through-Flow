@@ -306,6 +306,8 @@ export interface ImageArtifacts {
     width?: number;
     height?: number;
     error?: string;
+    /** flowResizeArt only: true when the bytes were actually downscaled. */
+    resized?: boolean;
 }
 
 /**
@@ -350,6 +352,58 @@ export function flowRevokeUrl(url: string): void {
     try {
         URL.revokeObjectURL(url);
     } catch { /* ignore */ }
+}
+
+/** Turn PNG base64 (e.g. from the 2K upscale RPC) into a page-context blob:
+ * URL so the background downloader can save it with folders honored. */
+export function flowB64ToBlobUrl(b64: string): { blobUrl?: string; error?: string } {
+    try {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return { blobUrl: URL.createObjectURL(new Blob([bytes], { type: "image/png" })) };
+    } catch (e) {
+        return { error: (e as Error).message };
+    }
+}
+
+/**
+ * Downscale-fit PNG base64 inside 1920×1080 (1080p quality). Never upscales:
+ * images already at or below the box come back untouched (same bytes).
+ */
+export function flowResizeArt(b64: string): Promise<ImageArtifacts> {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const w = img.naturalWidth;
+                const h = img.naturalHeight;
+                const scale = Math.min(1, 1920 / w, 1080 / h);
+                if (scale >= 1) {
+                    resolve({ b64, width: w, height: h, resized: false });
+                    return;
+                }
+                const c = document.createElement("canvas");
+                c.width = Math.round(w * scale);
+                c.height = Math.round(h * scale);
+                c.getContext("2d")?.drawImage(img, 0, 0, c.width, c.height);
+                const out = c.toDataURL("image/png").split(",")[1];
+                c.toBlob((b) => {
+                    resolve({
+                        b64: out,
+                        blobUrl: b ? URL.createObjectURL(b) : undefined,
+                        width: c.width,
+                        height: c.height,
+                        resized: true,
+                    });
+                }, "image/png");
+            } catch (e) {
+                resolve({ error: (e as Error).message, resized: false });
+            }
+        };
+        img.onerror = () => resolve({ error: "image load failed" });
+        img.src = "data:image/png;base64," + b64;
+    });
 }
 
 export interface AgentPostResult {

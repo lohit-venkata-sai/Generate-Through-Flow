@@ -205,10 +205,17 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
                                 aria="Quality"
                                 value={formValues.quality}
                                 onChange={(v) => set({ quality: v as FormValues["quality"] })}
-                                options={[{ value: "standard", label: "Standard" }]}
+                                options={[
+                                    { value: "standard", label: "Standard" },
+                                    { value: "1080p", label: "1080p (fit)" },
+                                    { value: "2k", label: "2K (server upscale)" },
+                                ]}
                             />
                         </div>
                     </div>
+                    <p className="-mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                        1080p fits images inside 1920×1080 (never upscales). 2K uses Flow's server upscale and falls back to Standard until the upscale call is mapped.
+                    </p>
                     <div className="text-xs font-medium text-muted-foreground">
                         <span className="mb-1.5 block">Images per prompt</span>
                         <Dropdown
@@ -322,9 +329,10 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
                         <span className="mb-1.5 block">Parallel jobs</span>
                         <Dropdown
                             aria="Parallel jobs"
-                            value={String(prefs.parallel ?? 2)}
+                            value={String(prefs.parallel ?? 1)}
                             onChange={(v) => setP({ parallel: Number(v) as AutomationPrefs["parallel"] })}
                             options={[
+                                { value: "1", label: "1× sequential (safest)" },
                                 { value: "2", label: "2× at a time" },
                                 { value: "5", label: "5× at a time" },
                                 { value: "7", label: "7× at a time" },
@@ -333,7 +341,7 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
                         />
                     </div>
                     <p className="-mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                        If Google flags unusual activity, the run auto-pauses with backoff and retries. 2× parallel + a 5–10s buffer avoids most blocks.
+                        If Google flags unusual activity, the run drops to 1× safe mode, then parks remaining items — resume in ~10 min at 1× + 5–10s buffer.
                     </p>
                     <div className="text-xs font-medium text-muted-foreground">
                         <span className="mb-1.5 block">Retries per prompt</span>

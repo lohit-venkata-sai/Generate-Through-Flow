@@ -57,7 +57,7 @@ describe("throttle handling", () => {
   });
 
   it("friendlyError guides throttled users to slow down", () => {
-    expect(friendlyError("unusual_activity")).toContain("2×");
+    expect(friendlyError("unusual_activity")).toContain("1×");
     expect(friendlyError("HTTP 429")).toContain("2×");
   });
 });

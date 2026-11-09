@@ -88,6 +88,17 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     });
 });
 
+// Drop per-download state once Chrome finishes — otherwise memById grows
+// for the whole browser session (Whisk does the same via onChanged).
+chrome.downloads.onChanged.addListener((delta) => {
+    const state = delta.state?.current;
+    if (state === "complete" || state === "interrupted") {
+        const id = delta.id;
+        memById.delete(id);
+        sessWrite("i:" + id, null);
+    }
+});
+
 // Central download service (background context).
 // Direct https URLs + explicit filename is the only combination Chrome
 // honors with subfolders — blob:/data: URLs get a generated name instead,

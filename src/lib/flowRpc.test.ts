@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_EXPERIMENTS, extractFlowImageUrls, FLOW_RPC, mineAgentToken } from "./flowRpc";
+import { AGENT_EXPERIMENTS, extractFlowImageUrls, FLOW_RPC, mineAgentToken, mineUpscaleB64 } from "./flowRpc";
 
 describe("agentInit builder", () => {
   it("builds the PROMPT_BOX_SUBMISSION envelope", () => {
@@ -61,5 +61,27 @@ describe("extractFlowImageUrls", () => {
 
   it("returns empty for plain text", () => {
     expect(extractFlowImageUrls("no urls here")).toEqual([]);
+  });
+});
+
+describe("upscaleImage", () => {
+  it("builds [mediaId, resolution, recaptchaBlock]", () => {
+    const built = FLOW_RPC.upscaleImage.build({ mediaId: "mid-1", resolution: 1, recaptcha: "tok" }) as unknown[];
+    expect(built[0]).toBe("mid-1");
+    expect(built[1]).toBe(1);
+    const block = built[2] as unknown[];
+    expect(block[5]).toBeNull(); // withProject:false — no workflow id
+    expect((block[10] as unknown[])).toEqual(["tok", 1]);
+  });
+
+  it("mines the longest base64 blob", () => {
+    const big = "iVBOR" + "A".repeat(12_000);
+    expect(FLOW_RPC.upscaleImage.parse({ a: ["tiny", { b: big }] })).toMatchObject({ b64: big });
+    expect(mineUpscaleB64({ a: "short" })).toBeNull();
+  });
+
+  it("is unmapped until the rpcid is captured", async () => {
+    const { resolveRpcid } = await import("./flowRpc");
+    expect(resolveRpcid("upscaleImage")).toBeNull();
   });
 });

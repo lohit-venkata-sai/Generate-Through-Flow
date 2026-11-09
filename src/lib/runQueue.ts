@@ -3,12 +3,12 @@
 // batchexecute(generateImage) -> preview bytes -> download. Stops only on
 // user Stop (or stopOnError). Emits timestamped logs for the Logs view.
 
-import { flowAbort, flowAgentPost, flowBatchExecute, flowGetProjectId, flowGetRecaptcha, flowGetToken, flowImageArtifacts, flowListWorkflows, flowRevokeUrl, flowScrapeLibrary, flowThumb } from "./flowPage";
+import { flowAbort, flowAgentPost, flowBatchExecute, flowGetProjectId, flowGetRecaptcha, flowGetToken, flowImageArtifacts, flowListWorkflows, flowRevokeUrl, flowScrapeLibrary, flowThumb, flowB64ToBlobUrl, flowResizeArt } from "./flowPage";
 import { bgDownload, anchorDownload } from "./downloads";
 import { buildCharIndex, extractTags, handleVariants, splitPromptParts, type CharIndex, type ResolvedRef } from "./flowRefs";
 import { FLOW_ASPECT_CODES, FLOW_MODEL_CODES, FLOW_RECAPTCHA_KEY, FLOW_TAB_URLS } from "./flowModels";
 import { FLOW_RPC, extractFlowImageUrls, mineAgentToken, resolveRpcid } from "./flowRpc";
-import type { AutomationPrefs, GeneratedImage, LogEntry, LogLevel, QueueItem, QueueStatus } from "../types";
+import type { AutomationPrefs, GeneratedImage, ImageQuality, LogEntry, LogLevel, QueueItem, QueueStatus } from "../types";
 
 export type { QueueItem, QueueStatus };
 
@@ -139,8 +139,59 @@ export function isThrottleError(msg: string): boolean {
         || t.includes("try again later") || t.includes("try again shortly");
 }
 
-/** Cooldown before retrying a throttled request (escalates per attempt). */
-export const THROTTLE_COOLDOWNS_MS = [45_000, 90_000, 180_000];
+/** Cooldown before retrying a throttled request (escalates per attempt).
+ * First entry is deliberately "a few minutes": a 45s retry after a long
+ * burst just re-trips the block and makes it sticky. Note: in-run retries
+ * are now capped by the circuit breaker below — after 3 hits the run parks
+ * remaining items instead of burning more retries into a hard block. */
+export const THROTTLE_COOLDOWNS_MS = [120_000, 180_000, 300_000];
+
+/** Always-on floor between ANY two Flow requests, even when buffer = Off.
+ * A fixed 0s gap looks bot-regular and trips abuse detection fast.
+ * Mirrors Whisk Automator's human-like delays (default 3–8s random). */
+const MIN_REQUEST_GAP_MS = 4_000;
+/** Extra random spread so request timing isn't metronomic. */
+const GAP_JITTER_MS = 3_000;
+/** Gap forced once safe mode trips (sequential + slow). */
+const SAFE_MODE_GAP_MS = 8_000;
+/** Throttle hits before the run drops to 1× sequential safe mode. */
+const SAFE_MODE_AFTER_HITS = 2;
+/** Throttle hits before the run parks remaining items (circuit breaker). */
+const CIRCUIT_BREAKER_HITS = 3;
+/** Consecutive failures (any kind) before the batch stops — same as
+ * Whisk Automator's 8-in-a-row rule. Prevents burning a dead session. */
+const CONSEC_FAIL_STOP = 8;
+/** Rest every N successes on long batches so a 125-prompt run isn't one burst. */
+const CHUNK_SIZE = 25;
+const CHUNK_REST_MS = 60_000;
+
+/** Reload the Flow tab and wait until it answers again (best effort).
+ * Ported from Whisk Automator's recovery level 1: a reload clears the
+ * transient "rejected" state often enough that the retry succeeds. Only
+ * safe with 1× sequential (no sibling in-flight requests). */
+async function refreshFlowTab(tabId: number, isStopped: () => boolean, log?: (level: LogLevel, msg: string) => void): Promise<boolean> {
+    try {
+        await chrome.tabs.reload(tabId);
+    } catch {
+        return false;
+    }
+    // Wait for the tab to finish loading (up to ~20s), then for the Flow
+    // session token to reappear (up to ~10s).
+    const end = Date.now() + 30_000;
+    while (Date.now() < end) {
+        if (isStopped()) return false;
+        try {
+            const tab = await chrome.tabs.get(tabId);
+            if (tab.status === "complete") {
+                const token = await exec(tabId, flowGetToken);
+                if (token) return true;
+            }
+        } catch { /* tab mid-reload — keep polling */ }
+        await new Promise((r) => setTimeout(r, 1000));
+    }
+    log?.("error", "Flow tab reloaded but session didn't come back — retrying anyway.");
+    return false;
+}
 
 async function callRpc(tabId: number, op: string, args: Record<string, unknown>, projectId: string) {
     const def = FLOW_RPC[op];
@@ -188,6 +239,7 @@ export interface RunOptions {
     model: string;
     aspectRatio: string;
     imagesPerPrompt: number;
+    quality: ImageQuality;
     folder: string;
     prefs: AutomationPrefs;
 }
@@ -217,6 +269,119 @@ export class FlowRunner {
         } catch { /* ignore */ }
     }
 
+    /**
+     * Quality step applied to freshly pulled images, before rename/download.
+     * - standard: native bytes untouched.
+     * - 1080p: in-page downscale-fit inside 1920×1080 (never upscales —
+     *   smaller natives are saved as-is).
+     * - 2k: Flow server-side upscale per image (Whisk-style: upscale RPC with
+     *   a fresh captcha, base64 reply → page blob). Unmapped RPC, quota hits
+     *   and per-image failures all fall back to standard, never fail the item.
+     */
+    private async applyQuality(
+        tag: string,
+        images: GeneratedImage[],
+        pageBlobs: string[],
+        rawB64: (string | undefined)[],
+        ids: string[],
+        ctx: {
+            tabId: number; projectId: string;
+            log: (level: LogLevel, msg: string) => void;
+            opts: RunOptions; shared: { upscaleUnmappedWarned: boolean; upscaleDowngraded: boolean };
+        },
+    ): Promise<void> {
+        const { tabId, projectId, log, opts, shared } = ctx;
+        const quality = opts.quality ?? "standard";
+        if (quality === "standard" || this.stopped) return;
+        if (quality === "1080p") {
+            let fitted = 0;
+            for (let n = 0; n < images.length; n++) {
+                if (this.stopped) break;
+                const src = rawB64[n];
+                if (!src) continue;
+                const r = await exec(tabId, flowResizeArt, [src]) as
+                    | { blobUrl?: string; b64?: string; width?: number; height?: number; error?: string; resized?: boolean }
+                    | undefined;
+                if (!r || r.error || !r.b64) {
+                    log("error", `${tag}: 1080p fit failed for image ${n + 1} — saving native resolution.`);
+                    continue;
+                }
+                if (r.resized) {
+                    // Keep the preview and the saved file in step: swap the
+                    // page blob for the fitted bytes. toBlob can fail, so
+                    // rebuild one from the resized bytes rather than letting
+                    // the download silently keep the native resolution.
+                    let fittedUrl = r.blobUrl;
+                    if (!fittedUrl) {
+                        const made = await exec(tabId, flowB64ToBlobUrl, [r.b64]) as { blobUrl?: string } | undefined;
+                        fittedUrl = made?.blobUrl;
+                    }
+                    if (fittedUrl) {
+                        if (pageBlobs[n]?.startsWith("blob:")) {
+                            void exec(tabId, flowRevokeUrl, [pageBlobs[n]]).catch(() => undefined);
+                        }
+                        pageBlobs[n] = fittedUrl;
+                    }
+                }
+                images[n].preview = await b64ToPreviewUrl(r.b64).catch(() => images[n].preview);
+                images[n].width = r.width;
+                images[n].height = r.height;
+                if (r.resized) fitted++;
+            }
+            if (fitted) log("info", `${tag}: 1080p fit applied to ${fitted} image${fitted === 1 ? "" : "s"} (fit inside 1920×1080).`);
+            return;
+        }
+        if (quality === "2k") {
+            if (shared.upscaleDowngraded) return;
+            for (let n = 0; n < images.length; n++) {
+                if (this.stopped) break;
+                if (shared.upscaleDowngraded) break;
+                const mediaId = ids[n];
+                if (!mediaId) {
+                    log("error", `${tag}: no media id for 2K upscale (image ${n + 1}) — saving standard.`);
+                    continue;
+                }
+                const captcha = await exec(tabId, flowGetRecaptcha, [FLOW_RECAPTCHA_KEY]);
+                if (!captcha) {
+                    log("error", `${tag}: reCAPTCHA not ready for 2K upscale — saving standard for image ${n + 1}.`);
+                    continue;
+                }
+                if (this.stopped) break;
+                const up = await callRpc(tabId, "upscaleImage", { mediaId, resolution: 1, recaptcha: captcha }, projectId);
+                if (!up.ok || !up.data?.b64) {
+                    const msg = up.error || "upscale returned no bytes";
+                    if (msg.includes("not mapped yet")) {
+                        if (!shared.upscaleUnmappedWarned) {
+                            shared.upscaleUnmappedWarned = true;
+                            log("error", `${tag}: 2K upscale call isn't mapped yet — downloading standard. Capture the upscale rpcid from DevTools batchexecute traffic and set LOCAL_RPC_OVERRIDES.upscaleImage.`);
+                        }
+                        break;
+                    }
+                    if (isThrottleError(msg) || /quota|limit|resource/i.test(msg)) {
+                        shared.upscaleDowngraded = true;
+                        log("error", `${tag}: 2K limit hit (${msg.slice(0, 120)}) — rest of this run downloads standard.`);
+                        break;
+                    }
+                    log("error", `${tag}: 2K upscale failed for image ${n + 1} — saving standard. (${msg.slice(0, 160)})`);
+                    continue;
+                }
+                const made = await exec(tabId, flowB64ToBlobUrl, [up.data.b64]) as
+                    | { blobUrl?: string; error?: string }
+                    | undefined;
+                if (!made?.blobUrl) {
+                    log("error", `${tag}: 2K bytes unusable for image ${n + 1} — saving standard.`);
+                    continue;
+                }
+                if (pageBlobs[n]?.startsWith("blob:")) {
+                    void exec(tabId, flowRevokeUrl, [pageBlobs[n]]).catch(() => undefined);
+                }
+                pageBlobs[n] = made.blobUrl;
+                images[n].preview = await b64ToPreviewUrl(up.data.b64).catch(() => images[n].preview);
+                log("info", `${tag}: 2K upscale ready (image ${n + 1}).`);
+            }
+        }
+    }
+
     private async runOne(
         item: QueueItem,
         ctx: {
@@ -225,9 +390,10 @@ export class FlowRunner {
             log: (level: LogLevel, msg: string) => void;
             touch: () => void;
             onItemDone: (images: number) => void;
+            shared: { throttleUntil: number; lastStart: number; throttleHits: number; safeMode: boolean; circuitBroken: boolean; doneCount: number; consecFails: number; upscaleUnmappedWarned: boolean; upscaleDowngraded: boolean };
         },
     ): Promise<void> {
-        const { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone } = ctx;
+        const { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone, shared } = ctx;
         item.status = "running";
         item.detail = undefined;
         touch();
@@ -246,44 +412,57 @@ export class FlowRunner {
         let lastError = "";
         for (let attempt = 1; attempt <= attempts; attempt++) {
             if (this.stopped) break;
+            // Global throttle gate: if any worker got flagged, every worker
+            // waits out the same window instead of hammering and extending
+            // the block.
+            if (shared.throttleUntil > Date.now()) {
+                const remain = shared.throttleUntil - Date.now();
+                log("info", `${tag}: waiting out Google cooldown (${Math.round(remain / 1000)}s left)…`);
+                await sleepBuffer(remain, () => this.stopped);
+                if (this.stopped) break;
+            }
             try {
                 log("info", `Sending request to Flow… (${tag}${attempts > 1 ? ` attempt ${attempt}/${attempts}` : ""})`);
                 const recaptcha = await exec(tabId, flowGetRecaptcha, [FLOW_RECAPTCHA_KEY]);
                 if (!recaptcha) throw new Error("reCAPTCHA not ready — reload the Flow tab");
                 if (this.stopped) break;
                 log("info", `Waiting for completion… (${tag})`);
-                    const res = await callRpc(tabId, "generateImage", {
-                        prompt: item.prompt,
-                        parts,
-                        refs: resolved,
-                        recaptcha,
-                        workflowId: projectId,
-                        model: modelCode,
-                        aspect: aspectCode,
-                        count: opts.imagesPerPrompt,
-                    }, projectId);
-                    if (!res.ok || !res.data?.urls?.length) throw new Error(res.error || "no image in reply");
-                    // Pull bytes in-page: page blob URLs for the background
-                    // download (folders honored), base64 for sidepanel preview.
-                    const images: GeneratedImage[] = [];
-                    const pageBlobs: string[] = [];
-                    for (const url of res.data.urls) {
-                        if (this.stopped) break;
-                        const art = await exec(tabId, flowImageArtifacts, [url]) as
-                            | { blobUrl?: string; b64?: string; width?: number; height?: number; error?: string }
-                            | undefined;
-                        if (!art || (!art.blobUrl && !art.b64)) {
-                            throw new Error(art?.error || "image pull failed");
-                        }
-                        pageBlobs.push(art.blobUrl || url);
-                        images.push({
-                            url,
-                            preview: art.b64 ? await b64ToPreviewUrl(art.b64).catch(() => undefined) : undefined,
-                            width: art.width,
-                            height: art.height,
-                        });
-                    }
+                const res = await callRpc(tabId, "generateImage", {
+                    prompt: item.prompt,
+                    parts,
+                    refs: resolved,
+                    recaptcha,
+                    workflowId: projectId,
+                    model: modelCode,
+                    aspect: aspectCode,
+                    count: opts.imagesPerPrompt,
+                }, projectId);
+                if (!res.ok || !res.data?.urls?.length) throw new Error(res.error || "no image in reply");
+                // Pull bytes in-page: page blob URLs for the background
+                // download (folders honored), base64 for sidepanel preview.
+                const images: GeneratedImage[] = [];
+                const pageBlobs: string[] = [];
+                const rawB64: (string | undefined)[] = [];
+                for (const url of res.data.urls) {
                     if (this.stopped) break;
+                    const art = await exec(tabId, flowImageArtifacts, [url]) as
+                        | { blobUrl?: string; b64?: string; width?: number; height?: number; error?: string }
+                        | undefined;
+                    if (!art || (!art.blobUrl && !art.b64)) {
+                        throw new Error(art?.error || "image pull failed");
+                    }
+                    pageBlobs.push(art.blobUrl || url);
+                    rawB64.push(art.b64);
+                    images.push({
+                        url,
+                        preview: art.b64 ? await b64ToPreviewUrl(art.b64).catch(() => undefined) : undefined,
+                        width: art.width,
+                        height: art.height,
+                    });
+                }
+                if (this.stopped) break;
+                // Quality step: standard downloads native bytes as-is.
+                await this.applyQuality(tag, images, pageBlobs, rawB64, res.data.ids || [], ctx);
                 if (this.stopped) break;
                 if (item.filename && res.data.workflowId) {
                     const renamed = await callRpc(tabId, "renameWorkflow", {
@@ -292,42 +471,46 @@ export class FlowRunner {
                     if (renamed.ok) log("info", `Named in Flow as "${item.filename}" (${tag})`);
                     else log("error", `Flow rename failed for "${item.filename}" (${tag}): ${renamed.error}`);
                 }
-                    if (opts.prefs.autoSave) {
-                        const base = buildBaseName(item.index, item.filename, item.prompt, opts.prefs);
-                        for (let n = 0; n < images.length; n++) {
-                            if (this.stopped) break;
-                            const suffix = images.length > 1 ? (n === 0 ? "" : ` (${n})`) : "";
-                            const wanted = `${folder}/${base}${suffix}.png`;
-                            log("info", `Downloading image… (${base}${suffix}.png)`);
-                            // Page-blob first (proven path with the filename
-                            // suggester), https URL as fallback.
-                            const dl = await bgDownload(pageBlobs[n] || images[n].url, wanted);
-                            if (dl.error) {
-                                log("error", `Folder save failed (${dl.error}) — saving flat…`);
-                                try {
-                                    const src = images[n].preview || images[n].url;
-                                    anchorDownload(await (await fetch(src)).blob(), `${base}${suffix}.png`);
-                                } catch {
-                                    throw new Error(`download failed: ${dl.error}`);
-                                }
-                            } else if (dl.savedAs) {
-                                const savedBase = dl.savedAs.split(/[\\/]/).pop();
-                                const wantedBase = `${base}${suffix}.png`;
-                                if (savedBase !== wantedBase) {
-                                    log("error", `Chrome renamed the file to "${savedBase}" (wanted "${wantedBase}") — check for downloader/renamer extensions or Chrome's ask-where-to-save setting.`);
-                                } else {
-                                    log("info", `Saved as ${dl.savedAs}`);
-                                }
+                if (opts.prefs.autoSave) {
+                    const base = buildBaseName(item.index, item.filename, item.prompt, opts.prefs);
+                    for (let n = 0; n < images.length; n++) {
+                        if (this.stopped) break;
+                        // Whisk-style pacing (Gt=300ms): don't fire
+                        // back-to-back downloads for multi-image prompts.
+                        if (n > 0) await sleepBuffer(300, () => this.stopped);
+                        if (this.stopped) break;
+                        const suffix = images.length > 1 ? (n === 0 ? "" : ` (${n})`) : "";
+                        const wanted = `${folder}/${base}${suffix}.png`;
+                        log("info", `Downloading image… (${base}${suffix}.png)`);
+                        // Page-blob first (proven path with the filename
+                        // suggester), https URL as fallback.
+                        const dl = await bgDownload(pageBlobs[n] || images[n].url, wanted);
+                        if (dl.error) {
+                            log("error", `Folder save failed (${dl.error}) — saving flat…`);
+                            try {
+                                const src = images[n].preview || images[n].url;
+                                anchorDownload(await (await fetch(src)).blob(), `${base}${suffix}.png`);
+                            } catch {
+                                throw new Error(`download failed: ${dl.error}`);
+                            }
+                        } else if (dl.savedAs) {
+                            const savedBase = dl.savedAs.split(/[\\/]/).pop();
+                            const wantedBase = `${base}${suffix}.png`;
+                            if (savedBase !== wantedBase) {
+                                log("error", `Chrome renamed the file to "${savedBase}" (wanted "${wantedBase}") — check for downloader/renamer extensions or Chrome's ask-where-to-save setting.`);
+                            } else {
+                                log("info", `Saved as ${dl.savedAs}`);
                             }
                         }
-                        if (this.stopped) break;
-                        log("success", `Saved ${base}.png`);
                     }
-                    for (const b of pageBlobs) {
-                        setTimeout(() => {
-                            exec(tabId, flowRevokeUrl, [b]).catch(() => undefined);
-                        }, 60_000);
-                    }
+                    if (this.stopped) break;
+                    log("success", `Saved ${base}.png`);
+                }
+                for (const b of pageBlobs) {
+                    setTimeout(() => {
+                        exec(tabId, flowRevokeUrl, [b]).catch(() => undefined);
+                    }, 60_000);
+                }
                 item.images = images;
                 item.status = "done";
                 item.durationMs = Date.now() - started;
@@ -340,27 +523,66 @@ export class FlowRunner {
                 if (this.stopped) break;
                 if (attempt < attempts) {
                     if (isThrottleError(lastError)) {
-                        // Google flagged the burst: pause with backoff instead of
-                        // hammering, or the block just extends itself.
+                        shared.throttleHits++;
+                        // Circuit breaker: 3rd hit in one run means Google has
+                        // hard-blocked this session. Parking (pending, not
+                        // error) beats retrying into a longer ban — Resume
+                        // picks these up in ~10 min at 1× + buffer.
+                        if (shared.throttleHits >= CIRCUIT_BREAKER_HITS) {
+                            shared.circuitBroken = true;
+                            item.status = "pending";
+                            item.detail = "Paused — Google unusual-activity block. Wait ~10 min, then Resume at 1× + 5–10s buffer.";
+                            log("error", `${tag}: Google blocked this session ${shared.throttleHits}× — parking remaining items instead of retrying into a longer ban. Wait ~10 min, then Resume at 1× + buffer.`);
+                            touch();
+                            return;
+                        }
+                        // Auto safe mode: 2nd hit drops the whole run to 1×
+                        // sequential + 8s gap for the remainder.
+                        if (!shared.safeMode && shared.throttleHits >= SAFE_MODE_AFTER_HITS) {
+                            shared.safeMode = true;
+                            log("error", `${tag}: 2nd block — dropping to safe mode (1× sequential + 8s gap) for the rest of this run.`);
+                        }
+                        // Google flagged the burst: pause EVERYTHING with
+                        // backoff instead of hammering, or the block just
+                        // extends itself. Publish the window to shared state
+                        // so sibling workers also back off (Math.max keeps
+                        // the longest window when several workers trip).
                         const waitMs = THROTTLE_COOLDOWNS_MS[Math.min(attempt - 1, THROTTLE_COOLDOWNS_MS.length - 1)];
-                        log("error", `${tag}: Google flagged unusual activity — cooling down ${Math.round(waitMs / 1000)}s before retry (${attempt}/${attempts}). Tip: 2× parallel + a buffer avoids this.`);
-                        await sleepBuffer(waitMs + Math.floor(Math.random() * 10_000), () => this.stopped);
+                        const jitter = Math.floor(Math.random() * 10_000);
+                        shared.throttleUntil = Math.max(shared.throttleUntil, Date.now() + waitMs + jitter);
+                        log("error", `${tag}: Google flagged unusual activity — cooling down ${Math.round(waitMs / 1000)}s before retry (${attempt}/${attempts}). Tip: 1× sequential + a buffer avoids this.`);
+                        await sleepBuffer(waitMs + jitter, () => this.stopped);
                         if (this.stopped) break;
+                        // Whisk-style recovery: reload the tab before retrying
+                        // so a transient rejected-state doesn't fail the retry.
+                        // Safe only when sequential — with parallel workers the
+                        // reload would kill siblings' in-flight requests.
+                        if (!this.stopped && (shared.safeMode || (opts.prefs.parallel ?? 1) <= 1) && !shared.circuitBroken) {
+                            log("info", `${tag}: reloading Flow tab before retry…`);
+                            await refreshFlowTab(tabId, () => this.stopped, log);
+                            if (this.stopped) break;
+                        }
                     } else {
                         log("error", `Error ${tag}: ${lastError} — retrying (${attempt}/${attempts})…`);
                     }
                 } else {
                     log("error", `Error ${tag}: ${lastError}`);
                     if (isThrottleError(lastError)) {
-                        log("error", `${tag}: wait a few minutes, then retry with 2× parallel and a 5–10s buffer.`);
+                        shared.throttleHits++;
+                        if (shared.throttleHits >= CIRCUIT_BREAKER_HITS) shared.circuitBroken = true;
+                        log("error", `${tag}: wait ~10 min, then retry at 1× sequential with a 5–10s buffer.`);
                     }
                 }
             }
         }
         if (item.status !== "done") {
-            item.status = this.stopped ? "pending" : "error";
-            item.detail = this.stopped ? undefined : lastError;
-            touch();
+            // Circuit-parked items are already pending with guidance — don't
+            // overwrite them with a generic error.
+            if ((item.status as QueueStatus) !== "pending") {
+                item.status = this.stopped ? "pending" : "error";
+                item.detail = this.stopped ? undefined : lastError;
+                touch();
+            }
         }
     }
 
@@ -392,7 +614,7 @@ export class FlowRunner {
         const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
         const folder = `${baseFolder}/GTF_${dateStamp}`;
         const attempts = 1 + Math.max(0, opts.prefs.retries);
-        const parallel = Math.min(10, Math.max(2, opts.prefs.parallel ?? 2));
+        const parallel = Math.min(10, Math.max(1, opts.prefs.parallel ?? 1));
         const bufferMs = Math.min(120_000, Math.max(0, opts.prefs.bufferSec ?? 0)) * 1000;
 
         // Index project characters for @tag resolution (best effort — the run
@@ -411,13 +633,18 @@ export class FlowRunner {
             return state;
         }
 
-        log("info", `Starting ${state.length} prompts on ${opts.model} (${parallel} at a time${bufferMs ? `, ${bufferMs / 1000}s buffer` : ""})…`);
+        log("info", `Starting ${state.length} prompts on ${opts.model} (${parallel} at a time${bufferMs ? `, ${bufferMs / 1000}s buffer` : ""}${opts.quality && opts.quality !== "standard" ? `, ${opts.quality}` : ""})…`);
 
         let cursor = 0;
-        let launched = 0;
+        // Shared across workers: throttleUntil pauses all launches after a
+        // block; lastStart enforces the gap globally (not per-worker);
+        // throttleHits drives safe-mode + circuit breaker; doneCount drives
+        // chunk rests on long batches; stopReason says WHY the breaker fired
+        // so the closing log doesn't blame Google for a dead session.
+        const shared = { throttleUntil: 0, lastStart: 0, throttleHits: 0, safeMode: false, circuitBroken: false, stopReason: null as null | "block" | "session", doneCount: 0, consecFails: 0, upscaleUnmappedWarned: false, upscaleDowngraded: false };
         // No mid-run tab refresh: the Flow tab stays untouched for the whole
         // batch so in-flight API calls are never interrupted.
-        const ctx = { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone: (n: number) => ev.onItemDone?.(n) };
+        const ctx = { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone: (n: number) => ev.onItemDone?.(n), shared };
         const worker = async (slot: number) => {
             // Stagger worker starts so the opening burst doesn't trip Google's
             // abuse detection ("unusual activity").
@@ -426,16 +653,55 @@ export class FlowRunner {
                 if (this.stopped) return;
             }
             while (!this.stopped) {
-                if (this.stopped) break;
+                if (this.stopped || shared.circuitBroken) break;
+                // Safe mode drains extras: after 2 blocks only slot 0 keeps
+                // going (1× sequential) instead of all workers hammering.
+                if (shared.safeMode && slot > 0) return;
+                // Respect a global cooldown before claiming the next item.
+                if (shared.throttleUntil > Date.now()) {
+                    await sleepBuffer(shared.throttleUntil - Date.now(), () => this.stopped);
+                    if (this.stopped) break;
+                }
                 const next = state.find((_, k) => k >= cursor && state[k].status !== "done");
                 if (!next) break;
                 cursor = state.indexOf(next) + 1;
                 if (opts.prefs.stopOnError && state.some((i) => i.status === "error")) break;
-                if (launched++ > 0 && bufferMs > 0) {
-                    await sleepBuffer(bufferMs, () => this.stopped);
-                    if (this.stopped) break;
+                // Human pacing: always ≥4s (+0–3s jitter) between ANY two
+                // requests, user buffer or 8s safe-mode gap when larger.
+                {
+                    const floor = shared.safeMode ? SAFE_MODE_GAP_MS : Math.max(bufferMs, MIN_REQUEST_GAP_MS);
+                    const wait = shared.lastStart + floor + Math.floor(Math.random() * GAP_JITTER_MS) - Date.now();
+                    if (wait > 0) {
+                        await sleepBuffer(wait, () => this.stopped);
+                        if (this.stopped) break;
+                    }
                 }
+                if (shared.circuitBroken) {
+                    // Give the slot back — item stays pending for Resume.
+                    cursor--;
+                    break;
+                }
+                shared.lastStart = Date.now();
                 await this.runOne(next, ctx);
+                if (shared.circuitBroken) break;
+                if (next.status === "done") {
+                    shared.doneCount++;
+                    shared.consecFails = 0;
+                    if (shared.doneCount % CHUNK_SIZE === 0 && state.some((i) => i.status === "pending")) {
+                        log("info", `Chunk rest: ${shared.doneCount} done — pausing 60s so Google doesn't see one long burst…`);
+                        await sleepBuffer(CHUNK_REST_MS, () => this.stopped);
+                        if (this.stopped) break;
+                    }
+                } else if (next.status === "error") {
+                    // Whisk-style 8-in-a-row rule: a dead session fails every
+                    // prompt — stop the batch instead of burning all retries.
+                    if (++shared.consecFails >= CONSEC_FAIL_STOP) {
+                        shared.circuitBroken = true;
+                        shared.stopReason = "session";
+                        log("error", `${CONSEC_FAIL_STOP} prompts failed in a row — stopping batch. Check the Flow tab (try one manual generation; if that fails too, turn off VPN / refresh / new project) and Resume later.`);
+                        break;
+                    }
+                }
                 if (!this.stopped && next.status === "error" && opts.prefs.stopOnError) {
                     log("error", "Stopping on first error (Automation setting).");
                     this.stop();
@@ -444,7 +710,16 @@ export class FlowRunner {
             }
         };
         await Promise.all(Array.from({ length: Math.min(parallel, state.length) }, (_, slot) => worker(slot)));
-        if (this.stopped) {
+        if (shared.circuitBroken) {
+            const parked = state.filter((i) => i.status === "pending").length;
+            if (shared.stopReason === "session") {
+                // The 8-in-a-row rule already logged why — don't follow it up
+                // with a Google-block message it didn't earn.
+                log("info", `Run ended — ${parked} item(s) left pending (see the failure above). Resume once the Flow tab generates one image manually.`);
+            } else {
+                log("error", `Run parked: Google blocked this session. ${parked} item(s) left pending — generate one image manually in the Flow tab; if that fails too it's Flow itself (VPN off, refresh or new project), then Resume in a few minutes at 1× + 5–10s buffer.`);
+            }
+        } else if (this.stopped) {
             log("info", "Stopped by user.");
         }
         this.tabId = null;
@@ -522,8 +797,9 @@ export async function submitAgentMessage(
 export function friendlyError(detail?: string): string {
     if (!detail) return "Failed";
     const t = detail.toLowerCase();
-    if (t.includes("high_traffic")) return "Google is busy (high traffic) — wait, then retry at 2×";
-    if (t.includes("unusual_activity") || t.includes("unusual activity")) return "Blocked by Google (unusual activity) — wait, then retry at 2× + buffer";
+    if (t.includes("high_traffic")) return "Google is busy (high traffic) — wait, then retry at 1×";
+    if (t.includes("unusual_activity") || t.includes("unusual activity")) return "Blocked by Google (unusual activity) — test 1 manual gen in Flow tab; if that fails, VPN off + refresh/new project, Resume at 1× + buffer";
+    if (t.includes("paused — google")) return "Parked (Google block) — wait ~10 min, then Resume at 1× + buffer";
     if (t.includes("per_model_daily_quota") || t.includes("daily_quota")) return "Daily limit — switch model";
     if (t.includes("rate limited") || t.includes("429")) return "Rate limited — auto-cooling down, or retry at 2×";
     if (t.includes("permission") || t.includes("403") || t.includes("auth") || t.includes("sign in")) return "Session expired — reload the Flow tab";

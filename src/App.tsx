@@ -103,7 +103,7 @@ function App() {
               ? "nano-banana-2.1"
               : savedValues.model ?? defaultFormValues.model,
           aspect_ratio: savedValues.aspect_ratio || defaultFormValues.aspect_ratio,
-          quality: savedValues.quality === "standard" ? savedValues.quality : defaultFormValues.quality,
+          quality: savedValues.quality === "standard" || savedValues.quality === "1080p" || savedValues.quality === "2k" ? savedValues.quality : defaultFormValues.quality,
           separator: savedValues.separator || defaultFormValues.separator,
         }
         setFormValues({ ...defaultFormValues, ...migratedValues })
@@ -113,7 +113,7 @@ function App() {
     loadPrefs().then((p) => {
       const merged = { ...defaultPrefs, ...p };
       if (![0, 5, 10, 15].includes(merged.bufferSec)) merged.bufferSec = 0;
-      if (![2, 5, 7, 10].includes(merged.parallel as number)) merged.parallel = 2;
+      if (![1, 2, 5, 7, 10].includes(merged.parallel as number)) merged.parallel = 1;
       setPrefs(merged);
     }).catch(() => undefined)
     loadPresets().then((p) => p && setPresets(p)).catch(() => undefined)

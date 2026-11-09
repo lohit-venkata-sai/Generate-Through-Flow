@@ -20,6 +20,8 @@ const MODELS = [
 const ASPECTS = ["9:16", "16:9", "1:1"];
 const QUALITIES = [
     { value: "standard", label: "Standard" },
+    { value: "1080p", label: "1080p (fit)" },
+    { value: "2k", label: "2K (server upscale)" },
 ];
 const SEPARATORS = [
     { value: "empty-line", label: "Empty line" },
