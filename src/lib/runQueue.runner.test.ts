@@ -1,0 +1,299 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FlowRunner } from "./runQueue";
+import type { RunEvents, RunOptions } from "./runQueue";
+import { bgDownload } from "./downloads";
+import { FLOW_RPC } from "./flowRpc";
+import { defaultPrefs } from "./store";
+import type { LogLevel, QueueItem } from "../types";
+
+// The runner talks to the page through chrome.scripting.executeScript, so we
+// fake the chrome global and answer each injected function by NAME. Nothing
+// here touches a real Flow tab, DOM canvas or downloader.
+vi.mock("./downloads", () => ({
+    bgDownload: vi.fn(async () => ({})),
+    anchorDownload: vi.fn(),
+}));
+
+const GEN_RPCID = FLOW_RPC.generateImage.rpcid;
+const IMAGE_URL = "https://flow-content.google/image/11111111-2222-3333-4444-555555555555";
+
+type Handler = (args: unknown[]) => unknown;
+const handlers = new Map<string, Handler>();
+/** Counts Flow-tab reloads — the throttle-recovery path reloads before retrying. */
+let reloadCount = 0;
+
+/** Answer one injected page function by its declared name. */
+function on(name: string, fn: Handler): void {
+    handlers.set(name, fn);
+}
+
+function installChrome(): void {
+    (globalThis as unknown as { chrome: unknown }).chrome = {
+        tabs: {
+            query: vi.fn(async () => [{ id: 7, url: "https://flow.google.com/project/p1" }]),
+            get: vi.fn(async () => ({ status: "complete" })),
+            reload: vi.fn(async () => {
+                reloadCount++;
+            }),
+        },
+        scripting: {
+            executeScript: vi.fn(async (opts: { func: { name: string }; args?: unknown[] }) => {
+                const handler = handlers.get(opts.func.name);
+                if (!handler) return [{ result: undefined }];
+                return [{ result: await handler(opts.args ?? []) }];
+            }),
+        },
+    };
+}
+
+/** Sign-in + captcha stubs every scenario needs. */
+function stubConnection(): void {
+    on("flowGetProjectId", () => "proj-1");
+    on("flowGetToken", () => "session-token");
+    on("flowGetRecaptcha", () => "captcha-token");
+}
+
+/** Everything a fully successful generation needs. */
+function stubSuccess(): void {
+    stubConnection();
+    on("flowBatchExecute", ([rpcid]) =>
+        rpcid === GEN_RPCID ? { ok: true, data: IMAGE_URL } : { ok: true, data: [] });
+    on("flowImageArtifacts", () => ({
+        blobUrl: "blob:native",
+        b64: "QUFBQQ==",
+        width: 2048,
+        height: 2048,
+    }));
+}
+
+function makeItems(n: number): QueueItem[] {
+    return Array.from({ length: n }, (_, i) => ({
+        index: i,
+        prompt: `Prompt ${i + 1}`,
+        filename: "",
+        status: "pending" as const,
+        images: [],
+        refs: [],
+    }));
+}
+
+function makeOpts(over: Partial<RunOptions> = {}): RunOptions {
+    return {
+        model: "nano-banana-2.1",
+        aspectRatio: "9:16",
+        imagesPerPrompt: 1,
+        quality: "standard",
+        folder: "TestFlow",
+        prefs: { ...defaultPrefs, retries: 0, parallel: 1, bufferSec: 0 },
+        ...over,
+    };
+}
+
+function collector(logs: string[]): RunEvents {
+    return {
+        onUpdate: () => undefined,
+        onLog: (_level: LogLevel, msg: string) => {
+            logs.push(msg);
+        },
+    };
+}
+
+/**
+ * The runner paces itself with real sleeps (4-7s gaps, 120-300s cooldowns,
+ * 60s chunk rests), so drive it on fake timers until it settles.
+ */
+async function drain(
+    runner: FlowRunner,
+    list: QueueItem[],
+    o: RunOptions,
+    ev: RunEvents,
+): Promise<QueueItem[]> {
+    let settled = false;
+    const pending = runner.run(list, o, ev).then((r) => {
+        settled = true;
+        return r;
+    });
+    for (let i = 0; i < 6000 && !settled; i++) {
+        await vi.advanceTimersByTimeAsync(1000);
+    }
+    if (!settled) throw new Error("run() never settled within 6000s of simulated time");
+    return pending;
+}
+
+beforeEach(() => {
+    // Date MUST be faked too: sleepBuffer() polls Date.now() against a target.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    handlers.clear();
+    reloadCount = 0;
+    installChrome();
+    vi.mocked(bgDownload).mockClear();
+});
+
+afterEach(() => {
+    vi.useRealTimers();
+});
+
+describe("throttle state machine", () => {
+    it("parks the rest of the batch after 3 throttle hits instead of retrying into the ban", async () => {
+        stubConnection();
+        on("flowBatchExecute", () => ({ error: "rpc: unusual_activity detected" }));
+        const logs: string[] = [];
+
+        const result = await drain(
+            new FlowRunner(),
+            makeItems(4),
+            makeOpts({ prefs: { ...defaultPrefs, retries: 2, parallel: 1, bufferSec: 0 } }),
+            collector(logs),
+        );
+
+        // The item that burned all its own attempts fails outright…
+        expect(result[0].status).toBe("error");
+        expect(result[0].detail).toContain("unusual_activity");
+        // …but every item behind it is parked, not errored, so Resume picks it up.
+        expect(result.slice(1).map((i) => i.status)).toEqual(["pending", "pending", "pending"]);
+        // 2nd hit drops to safe mode, 3rd trips the breaker.
+        expect(logs.some((l) => l.includes("dropping to safe mode"))).toBe(true);
+        expect(logs.some((l) => l.includes("Run parked: Google blocked this session"))).toBe(true);
+        // Recovery: the tab is reloaded between retries (sequential only).
+        expect(reloadCount).toBeGreaterThanOrEqual(1);
+    });
+
+    it("stops after 8 consecutive failures and does not blame them on a Google block", async () => {
+        stubConnection();
+        on("flowBatchExecute", () => ({ error: "no image in reply" }));
+        const logs: string[] = [];
+
+        const result = await drain(new FlowRunner(), makeItems(12), makeOpts(), collector(logs));
+
+        // Dead session: 8 prompts burn, the rest stay queued for a later Resume.
+        expect(result.filter((i) => i.status === "error")).toHaveLength(8);
+        expect(result.filter((i) => i.status === "pending")).toHaveLength(4);
+        expect(logs.some((l) => l.includes("8 prompts failed in a row"))).toBe(true);
+        expect(logs.some((l) => l.includes("Run ended"))).toBe(true);
+        expect(logs.some((l) => l.includes("Google blocked this session"))).toBe(false);
+    });
+
+    it("keeps a >=4s gap between prompts even with the buffer set to Off", async () => {
+        stubConnection();
+        const stamps: number[] = [];
+        on("flowBatchExecute", ([rpcid]) => {
+            if (rpcid === GEN_RPCID) stamps.push(Date.now());
+            return rpcid === GEN_RPCID ? { ok: true, data: IMAGE_URL } : { ok: true, data: [] };
+        });
+        on("flowImageArtifacts", () => ({ blobUrl: "blob:native", b64: "QUFBQQ==", width: 2048, height: 2048 }));
+
+        const result = await drain(new FlowRunner(), makeItems(3), makeOpts(), collector([]));
+
+        expect(result.every((i) => i.status === "done")).toBe(true);
+        expect(stamps).toHaveLength(3);
+        for (let i = 1; i < stamps.length; i++) {
+            expect(stamps[i] - stamps[i - 1]).toBeGreaterThanOrEqual(4000);
+        }
+    });
+
+    it("takes a 60s chunk rest after every 25 successes on a long batch", async () => {
+        stubSuccess();
+        const logs: string[] = [];
+
+        const result = await drain(new FlowRunner(), makeItems(26), makeOpts(), collector(logs));
+
+        expect(result.every((i) => i.status === "done")).toBe(true);
+        expect(logs.some((l) => l.includes("Chunk rest: 25 done"))).toBe(true);
+        // Exactly one rest: 26 items never reach the next multiple of 25.
+        expect(logs.filter((l) => l.includes("Chunk rest:"))).toHaveLength(1);
+    });
+
+    it("widens the pacing gap to 8s for the rest of the run once safe mode trips", async () => {
+        stubConnection();
+        const stamps: number[] = [];
+        let genCalls = 0;
+        // First two generations get blocked (2nd trip arms safe mode), then the
+        // session recovers and the rest of the batch succeeds.
+        on("flowBatchExecute", ([rpcid]) => {
+            if (rpcid !== GEN_RPCID) return { ok: true, data: [] };
+            stamps.push(Date.now());
+            genCalls++;
+            if (genCalls <= 2) return { error: "rpc: unusual_activity detected" };
+            return { ok: true, data: IMAGE_URL };
+        });
+        on("flowImageArtifacts", () => ({ blobUrl: "blob:native", b64: "QUFBQQ==", width: 2048, height: 2048 }));
+        const logs: string[] = [];
+
+        const result = await drain(
+            new FlowRunner(),
+            makeItems(3),
+            makeOpts({ prefs: { ...defaultPrefs, retries: 2, parallel: 1, bufferSec: 0 } }),
+            collector(logs),
+        );
+
+        expect(result.every((i) => i.status === "done")).toBe(true);
+        expect(logs.some((l) => l.includes("dropping to safe mode"))).toBe(true);
+        // stamps: item1 attempts 1-3, then item2, then item3. The last gap is
+        // pure worker pacing — in safe mode it must be the 8s floor, not 4s.
+        expect(stamps).toHaveLength(5);
+        const pacingGap = stamps[4] - stamps[3];
+        expect(pacingGap).toBeGreaterThanOrEqual(8000);
+        expect(pacingGap).toBeLessThan(8000 + 3000 + 1);
+    });
+});
+
+describe("quality fallbacks", () => {
+    it("standard quality never calls into the page for resizing", async () => {
+        stubSuccess();
+        let resizeCalls = 0;
+        on("flowResizeArt", () => {
+            resizeCalls++;
+            return { error: "should not run" };
+        });
+
+        const result = await drain(new FlowRunner(), makeItems(1), makeOpts(), collector([]));
+
+        expect(result[0].status).toBe("done");
+        expect(resizeCalls).toBe(0);
+        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe("blob:native");
+    });
+
+    it("1080p swaps the page blob for the fitted bytes so preview and file agree", async () => {
+        stubSuccess();
+        on("flowResizeArt", () => ({
+            blobUrl: "blob:fitted",
+            b64: "QUFB",
+            width: 1920,
+            height: 1080,
+            resized: true,
+        }));
+        const logs: string[] = [];
+
+        const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ quality: "1080p" }), collector(logs));
+
+        expect(result[0].status).toBe("done");
+        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe("blob:fitted");
+        expect(logs.some((l) => l.includes("1080p fit applied to 1 image"))).toBe(true);
+        expect(result[0].images[0].width).toBe(1920);
+    });
+
+    it("1080p keeps the native bytes when the fit fails", async () => {
+        stubSuccess();
+        on("flowResizeArt", () => ({ error: "canvas unavailable" }));
+        const logs: string[] = [];
+
+        const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ quality: "1080p" }), collector(logs));
+
+        // A failed fit must never fail the item.
+        expect(result[0].status).toBe("done");
+        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe("blob:native");
+        expect(logs.some((l) => l.includes("1080p fit failed"))).toBe(true);
+    });
+
+    it("2K downloads standard while the upscale rpcid is still unmapped", async () => {
+        stubSuccess();
+        const logs: string[] = [];
+
+        const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ quality: "2k" }), collector(logs));
+
+        expect(result[0].status).toBe("done");
+        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe("blob:native");
+        expect(logs.some((l) => l.includes("isn't mapped yet"))).toBe(true);
+        expect(logs.some((l) => l.includes("2K upscale ready"))).toBe(false);
+    });
+});
