@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bell, BookmarkPlus, Download, FolderPen, History, Image as ImageIcon, Play, Trash2, Upload } from "lucide-react";
+import { Bell, BookmarkPlus, Download, FolderPen, History, Image as ImageIcon, LifeBuoy, Play, Trash2, Upload } from "lucide-react";
 import { checkFlowConnection } from "../lib/runQueue";
 import { savePresets, uid } from "../lib/store";
 import { Dropdown } from "./Dropdown";
@@ -14,6 +14,8 @@ interface SettingsViewProps {
     setPresets: React.Dispatch<React.SetStateAction<SavedPreset[]>>;
     todayCount: number;
     onApplyPreset: (values: FormValues, prefs: AutomationPrefs) => void;
+    /** Clears the remembered dismissal so the Help & Feedback card shows again. */
+    onReopenHelp: () => void;
 }
 
 type Tab = "general" | "presets" | "automation" | "advanced";
@@ -33,7 +35,7 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
     );
 }
 
-export function SettingsView({ formValues, setFormValues, prefs, setPrefs, presets, setPresets, todayCount, onApplyPreset }: SettingsViewProps) {
+export function SettingsView({ formValues, setFormValues, prefs, setPrefs, presets, setPresets, todayCount, onApplyPreset, onReopenHelp }: SettingsViewProps) {
     const [tab, setTab] = useState<Tab>("general");
     const [presetName, setPresetName] = useState("");
     const [diag, setDiag] = useState<string | null>(null);
@@ -169,6 +171,22 @@ export function SettingsView({ formValues, setFormValues, prefs, setPrefs, prese
                         <span className="block text-sm font-bold tabular-nums">{todayCount} image{todayCount === 1 ? "" : "s"} generated today</span>
                         <span className="block text-[11px] text-muted-foreground">Resets daily · counted in this browser only</span>
                     </span>
+                </section>
+                <section className="flex items-center gap-3 rounded-2xl border bg-card p-4 shadow-sm">
+                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                        <LifeBuoy className="size-5" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-bold">Help &amp; Feedback</span>
+                        <span className="block text-[11px] text-muted-foreground">Bug reports and feature requests live in our Discord</span>
+                    </span>
+                    <button
+                        type="button"
+                        onClick={onReopenHelp}
+                        className="shrink-0 rounded-xl border border-primary/50 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10"
+                    >
+                        Show
+                    </button>
                 </section>
                 <section className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm">
                     <h2 className="text-sm font-semibold">Default Settings</h2>

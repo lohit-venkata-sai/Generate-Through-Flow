@@ -9,7 +9,7 @@ import { HelpFeedbackCard } from './components/HelpFeedbackCard'
 import { SettingsView } from './components/SettingsView'
 import { SetupView } from './components/SetupView'
 import { TourOverlay } from './components/TourOverlay'
-import { defaultBatchName, defaultPrefs, addTodayCount, loadHistory, loadPrefs, loadPresets, loadTodayCount, loadTourSeen, saveHistory, savePrefs, savePresets, saveTourSeen, uid } from './lib/store'
+import { defaultBatchName, defaultPrefs, addTodayCount, loadHelpDismissed, loadHistory, loadPrefs, loadPresets, loadTodayCount, loadTourSeen, saveHelpDismissed, saveHistory, savePrefs, savePresets, saveTourSeen, uid } from './lib/store'
 import type { AppView, AutomationPrefs, BatchRecord, FormValues, LogEntry, LogLevel, Mode, QueueItem, SavedPreset } from './types'
 
 const STORAGE_KEY = "flowpilot-form-values"
@@ -80,9 +80,10 @@ function App() {
   const [queueItems, setQueueItems] = useState<QueueItem[]>([])
   const [queueLogs, setQueueLogs] = useState<LogEntry[]>([])
   const [showTour, setShowTour] = useState(false)
-  // Help & Feedback card: shown on every open, closed manually for that
-  // session only — deliberately NOT persisted, so it comes back next time.
-  const [showHelp, setShowHelp] = useState(true)
+  // Help & Feedback card: first launch only. Dismissal is remembered in
+  // chrome.storage.local so it never returns on its own — Settings can
+  // clear the flag to bring it back.
+  const [showHelp, setShowHelp] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [todayCount, setTodayCount] = useState(0)
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -127,6 +128,9 @@ function App() {
     loadTourSeen().then((seen) => {
       if (!seen) setShowTour(true)
     }).catch(() => undefined)
+    loadHelpDismissed().then((dismissed) => {
+      if (!dismissed) setShowHelp(true)
+    }).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -152,7 +156,16 @@ function App() {
   };
 
   const handleDismissHelp = () => {
+    void saveHelpDismissed(true).catch(() => undefined);
     setShowHelp(false);
+  };
+
+  // Settings → "Show Help & Feedback": clear the remembered dismissal and
+  // jump back to the main view, the only place the card renders.
+  const handleReopenHelp = () => {
+    void saveHelpDismissed(false).catch(() => undefined);
+    setShowHelp(true);
+    setView("main");
   };
 
   const handleComplete = async (items: QueueItem[], elapsedMs: number) => {
@@ -331,6 +344,7 @@ function App() {
               setPresets={setPresets}
               todayCount={todayCount}
               onApplyPreset={(values, p) => { setFormValues({ ...values }); setPrefs({ ...p }); setView("main"); }}
+              onReopenHelp={handleReopenHelp}
             />
           )}
         </main>
