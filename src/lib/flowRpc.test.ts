@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_EXPERIMENTS, extractFlowImageUrls, FLOW_RPC, mineAgentToken, mineUpscaleB64 } from "./flowRpc";
+import { AGENT_EXPERIMENTS, extractFlowImageUrls, FLOW_RPC, mineAgentToken, mineUpscaleB64, mineWorkflowName } from "./flowRpc";
 
 describe("agentInit builder", () => {
   it("builds the PROMPT_BOX_SUBMISSION envelope", () => {
@@ -83,5 +83,29 @@ describe("upscaleImage", () => {
   it("is unmapped until the rpcid is captured", async () => {
     const { resolveRpcid } = await import("./flowRpc");
     expect(resolveRpcid("upscaleImage")).toBeNull();
+  });
+});
+
+describe("mineWorkflowName", () => {
+  it("reads the name slot when the response carries the workflow object", () => {
+    // generateImage.parse reads workflowId from [2]; when [3] is [name]
+    // (same family as renameWorkflow's build), that's Flow's own title.
+    const resp = [[[null, null, "workflows/w1", ["Sunset drive"], "proj"]]];
+    expect(mineWorkflowName(resp)).toBe("Sunset drive");
+  });
+
+  it("finds a display_name / title key anywhere in the payload", () => {
+    expect(mineWorkflowName({ meta: { display_name: " Scene 1 " } })).toBe("Scene 1");
+    expect(mineWorkflowName({ nested: [{ title: "Moment 9" }] })).toBe("Moment 9");
+    expect(mineWorkflowName([[["a", null, "workflows/w1", null, "p"]], { displayName: "Fallback" }])).toBe("Fallback");
+  });
+
+  it("returns undefined when Flow doesn't say (prompt is the fallback)", () => {
+    expect(mineWorkflowName(null)).toBeUndefined();
+    expect(mineWorkflowName({ display_name: "   " })).toBeUndefined();
+    // Id-shaped strings are payloads, not titles.
+    expect(mineWorkflowName({ title: "34465393-3323-2816-5910-000000000000" })).toBeUndefined();
+    // [3] is only trusted when [2] proves this is the workflow object.
+    expect(mineWorkflowName([[["workflows/w1", null, null, ["nope"], "proj"]]])).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FlowRunner } from "./runQueue";
 import type { RunEvents, RunOptions } from "./runQueue";
-import { bgDownload } from "./downloads";
+import { anchorDownload, bgDownload } from "./downloads";
 import { FLOW_RPC } from "./flowRpc";
 import { defaultPrefs } from "./store";
 import type { LogLevel, QueueItem } from "../types";
@@ -127,6 +127,7 @@ beforeEach(() => {
     reloadCount = 0;
     installChrome();
     vi.mocked(bgDownload).mockClear();
+    vi.mocked(anchorDownload).mockClear();
 });
 
 afterEach(() => {
@@ -250,7 +251,10 @@ describe("quality fallbacks", () => {
 
         expect(result[0].status).toBe("done");
         expect(resizeCalls).toBe(0);
-        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe("blob:native");
+        // Native bytes download straight from the https URL — the name comes
+        // from the `filename` argument, never from a blob/suggest round trip.
+        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe(IMAGE_URL);
+        expect(vi.mocked(anchorDownload)).not.toHaveBeenCalled();
     });
 
     it("1080p swaps the page blob for the fitted bytes so preview and file agree", async () => {
@@ -267,7 +271,10 @@ describe("quality fallbacks", () => {
         const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ quality: "1080p" }), collector(logs));
 
         expect(result[0].status).toBe("done");
-        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe("blob:fitted");
+        // The fitted bytes differ from what the URL serves, so the URL path is
+        // skipped entirely — the anchor saves the exact planned name instead.
+        expect(vi.mocked(bgDownload)).not.toHaveBeenCalled();
+        expect(vi.mocked(anchorDownload).mock.calls[0][1]).toBe("Prompt 1.png");
         expect(logs.some((l) => l.includes("1080p fit applied to 1 image"))).toBe(true);
         expect(result[0].images[0].width).toBe(1920);
     });
@@ -281,7 +288,8 @@ describe("quality fallbacks", () => {
 
         // A failed fit must never fail the item.
         expect(result[0].status).toBe("done");
-        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe("blob:native");
+        // Nothing was altered, so the original https URL is still the truth.
+        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe(IMAGE_URL);
         expect(logs.some((l) => l.includes("1080p fit failed"))).toBe(true);
     });
 
@@ -292,9 +300,44 @@ describe("quality fallbacks", () => {
         const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ quality: "2k" }), collector(logs));
 
         expect(result[0].status).toBe("done");
-        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe("blob:native");
+        expect(vi.mocked(bgDownload).mock.calls[0][0]).toBe(IMAGE_URL);
         expect(logs.some((l) => l.includes("isn't mapped yet"))).toBe(true);
         expect(logs.some((l) => l.includes("2K upscale ready"))).toBe(false);
+    });
+});
+
+describe("file naming", () => {
+    it("saves #name images into the dated folder with (1) incrementing duplicates", async () => {
+        stubSuccess();
+        // Two prompts sharing the same #name — the batch plan must hand out
+        // 1-01 to the first and 1-01(1) to the second, not both 1-01.
+        const items: QueueItem[] = [
+            { index: 0, prompt: "a red sky", filename: "1-01", status: "pending", images: [], refs: [] },
+            { index: 1, prompt: "a blue sea", filename: "1-01", status: "pending", images: [], refs: [] },
+        ];
+
+        const result = await drain(new FlowRunner(), items, makeOpts({ folder: "" }), collector([]));
+
+        expect(result.every((i) => i.status === "done")).toBe(true);
+        const calls = vi.mocked(bgDownload).mock.calls;
+        expect(calls).toHaveLength(2);
+        // Direct https URL first: Chrome applies name AND subfolder itself.
+        expect(calls[0][0]).toBe(IMAGE_URL);
+        expect(calls[0][1]).toMatch(/^GenerateThroughFlow\d{6}\/1-01\.png$/);
+        expect(calls[1][1]).toMatch(/^GenerateThroughFlow\d{6}\/1-01\(1\)\.png$/);
+        // Folder names never collide between the two calls.
+        expect(calls[0][1]).not.toBe(calls[1][1]);
+    });
+
+    it("falls back to the prompt text when there is no #name and no Flow title", async () => {
+        stubSuccess();
+
+        const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ folder: "" }), collector([]));
+
+        expect(result[0].status).toBe("done");
+        const calls = vi.mocked(bgDownload).mock.calls;
+        // makeItems prompts are "Prompt 1" — that exact text becomes the name.
+        expect(calls[0][1]).toMatch(/^GenerateThroughFlow\d{6}\/Prompt 1\.png$/);
     });
 });
 

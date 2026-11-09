@@ -1,20 +1,23 @@
 import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, X } from "lucide-react";
 import { useState } from "react";
-import { bgDownload } from "../lib/downloads";
-import { findFlowTab } from "../lib/runQueue";
+import { anchorDownload, bgDownload } from "../lib/downloads";
 import { useLockBodyScroll } from "../lib/useLockBodyScroll";
-import { flowImageArtifacts, flowRevokeUrl } from "../lib/flowPage";
-import type { QueueItem } from "../types";
+import { imageFolderName, plannedName, planNames } from "../lib/naming";
+import type { AutomationPrefs, QueueItem } from "../types";
 
 interface ResultModalProps {
     items: QueueItem[];
     itemIndex: number;
     imgIndex: number;
+    prefs: AutomationPrefs;
+    imagesPerPrompt: number;
+    /** Folder base the run used (file_name_pattern, defaulting in naming.ts). */
+    folderBase: string;
     onNavigate: (itemIndex: number, imgIndex: number) => void;
     onClose: () => void;
 }
 
-export function ResultModal({ items, itemIndex, imgIndex, onNavigate, onClose }: ResultModalProps) {
+export function ResultModal({ items, itemIndex, imgIndex, prefs, imagesPerPrompt, folderBase, onNavigate, onClose }: ResultModalProps) {
     const [copied, setCopied] = useState(false);
     const [saved, setSaved] = useState(false);
     useLockBodyScroll();
@@ -40,43 +43,30 @@ export function ResultModal({ items, itemIndex, imgIndex, onNavigate, onClose }:
 
     const download = async () => {
         if (!img || !item) return;
-        const base = (item.filename || `prompt-${String(item.index + 1).padStart(3, "0")}`).replace(/[\\/:*?"<>|]+/g, "_");
-        const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-        const wanted = `GenerateThroughFlow/GTF_${dateStamp}/${base}.png`;
-        // Prefer a page-blob URL (proven path with the filename suggester).
+        // Same planner the run used, so this saves the exact name the queue
+        // and the ZIP use for this image (1-01.png, 1-01(1).png, …).
+        const plan = planNames(items, prefs, imagesPerPrompt);
+        const name = plannedName(plan, item, safeImg, prefs);
+        const wanted = `${imageFolderName(folderBase)}/${name}.png`;
         try {
-            const tab = await findFlowTab();
-            if (tab?.id) {
-                const art = await chrome.scripting.executeScript({
-                    target: { tabId: tab.id },
-                    world: "MAIN",
-                    func: flowImageArtifacts as (...args: unknown[]) => unknown,
-                    args: [img.url],
-                }).then((r) => r?.[0]?.result as { blobUrl?: string; error?: string } | undefined)
-                    .catch(() => undefined);
-                if (art?.blobUrl) {
-                    const res = await bgDownload(art.blobUrl, wanted);
-                    setTimeout(() => {
-                        chrome.scripting.executeScript({
-                            target: { tabId: tab.id as number },
-                            world: "MAIN",
-                            func: flowRevokeUrl as (...args: unknown[]) => unknown,
-                            args: [art.blobUrl as string],
-                        }).catch(() => undefined);
-                    }, 60_000);
-                    if (!res.error) {
-                        setSaved(true);
-                        window.setTimeout(() => setSaved(false), 2000);
-                        return;
-                    }
+            if (!img.altered) {
+                // Direct https URL + filename: Chrome honors the name AND the
+                // subfolder itself — no filename-suggest listener involved.
+                const res = await bgDownload(img.url, wanted);
+                if (!res.error) {
+                    setSaved(true);
+                    window.setTimeout(() => setSaved(false), 2000);
+                    return;
                 }
             }
-        } catch { /* fall through to direct URL */ }
-        const res = await bgDownload(img.url, wanted);
-        if (!res.error) {
+            // Quality-fit bytes (URL download would undo them) or the URL
+            // download failed: an anchor always honors the exact name —
+            // flat in the Downloads root, never a random blob name.
+            const src = img.preview || img.url;
+            anchorDownload(await (await fetch(src)).blob(), `${name}.png`);
             setSaved(true);
             window.setTimeout(() => setSaved(false), 2000);
-        }
+        } catch { /* nothing worked — leave the button as-is */ }
     };
 
     const copyImage = async () => {

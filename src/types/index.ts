@@ -36,6 +36,8 @@ export interface GeneratedImage {
     preview?: string;
     width?: number;
     height?: number;
+    /** True when the bytes to save differ from `url` (1080p fit / 2K upscale). */
+    altered?: boolean;
 }
 
 export interface QueueItem {
@@ -44,6 +46,8 @@ export interface QueueItem {
     filename: string;
     status: QueueStatus;
     detail?: string;
+    /** Flow's own title for this generation — the filename fallback when no #name. */
+    flowName?: string;
     images: GeneratedImage[];
     durationMs?: number;
     refs: { tag: string; mediaId: string }[];

@@ -29,8 +29,12 @@ describe("buildBaseName", () => {
     expect(buildBaseName(0, "my:pic?", "ignored", prefs)).toBe("my_pic_");
   });
 
-  it("slugs the last prompt line otherwise", () => {
-    expect(buildBaseName(0, "", "A Red Sky!", prefs)).toBe("001-a-red-sky");
+  it("falls back to the prompt text when there is no #name", () => {
+    // Was a `001-a-red-sky` slug; the fallback is now what the prompt (or
+    // Flow's own title, when present) actually says.
+    expect(buildBaseName(0, "", "A Red Sky!", prefs)).toBe("A Red Sky!");
+    expect(buildBaseName(2, "", "", prefs)).toBe("image-003");
+    expect(buildBaseName(0, "", "A Red Sky!", prefs, "Scene 7")).toBe("Scene 7");
   });
 
   it("applies the custom pattern when enabled", () => {

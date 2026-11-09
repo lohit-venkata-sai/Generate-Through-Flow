@@ -5,11 +5,12 @@ import {
 } from "lucide-react";
 import { countUnusablePrompts, parsePrompts } from "../lib/promptParser";
 import {
-    buildBaseName, checkFlowConnection, FlowRunner, friendlyError, indexProjectCharacters, splitFilename,
+    checkFlowConnection, FlowRunner, friendlyError, indexProjectCharacters, splitFilename,
 } from "../lib/runQueue";
+import { plannedName, planNames, zipFileName } from "../lib/naming";
 import { extractTags, resolveTag, type CharIndex } from "../lib/flowRefs";
 import { buildZip } from "../lib/zipStore";
-import { bgDownload } from "../lib/downloads";
+import { anchorDownload } from "../lib/downloads";
 import { loadResume, saveResume } from "../lib/store";
 import { ResultModal } from "./ResultModal";
 import { Dropdown } from "./Dropdown";
@@ -304,17 +305,19 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
 
     const downloadAll = async () => {
         pushLog("info", "Packing generated images into a ZIP…");
-        const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
         const files: { name: string; data: Uint8Array }[] = [];
+        // Recompute the run's name plan from the same inputs so the ZIP's
+        // entries match what was saved to disk (1-01.png, 1-01(1).png, …).
+        const widest = items.reduce((m, i) => Math.max(m, i.images.length), 1);
+        const plan = planNames(items, prefs, Math.max(formValues.images_per_prompt, widest));
         for (const item of items) {
-            const base = buildBaseName(item.index, item.filename, item.prompt, prefs);
             for (let n = 0; n < item.images.length; n++) {
-                const suffix = item.images.length > 1 ? (n === 0 ? "" : ` (${n})`) : "";
+                const name = plannedName(plan, item, n, prefs);
                 const img = item.images[n];
                 try {
                     const src = img.preview || img.url;
                     const buf = await (await fetch(src)).arrayBuffer();
-                    files.push({ name: `${base}${suffix}.png`, data: new Uint8Array(buf) });
+                    files.push({ name: `${name}.png`, data: new Uint8Array(buf) });
                 } catch {
                     pushLog("error", `Skipped #${String(item.index + 1).padStart(2, "0")} (bytes unavailable)`);
                 }
@@ -324,18 +327,16 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
             pushLog("error", "Nothing to zip — no image bytes available.");
             return;
         }
-        // Routed through the background downloader (flat exact name, no nested
-        // folder) so the filename suggester forces the name for blob: URLs.
-        const zipName = `GTF_${dateStamp}.zip`;
-        const zipUrl = URL.createObjectURL(buildZip(files));
+        // Saved straight from this document: an anchor always honors the
+        // exact name. (Routing the blob through the background downloader
+        // produced Chrome-generated names — blob URLs bypass `filename` and
+        // depend on the filename-suggest listener, which isn't applying.)
+        const zipName = zipFileName();
         try {
-            const res = await bgDownload(zipUrl, zipName);
-            if (res.error) throw new Error(res.error);
+            anchorDownload(buildZip(files), zipName);
             pushLog("success", `Downloaded ${zipName} with ${files.length} images.`);
         } catch {
             pushLog("error", "ZIP download failed.");
-        } finally {
-            setTimeout(() => URL.revokeObjectURL(zipUrl), 120_000);
         }
     };
 
@@ -635,6 +636,9 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                     items={items}
                     itemIndex={modal.item}
                     imgIndex={modal.img}
+                    prefs={prefs}
+                    imagesPerPrompt={formValues.images_per_prompt}
+                    folderBase={formValues.file_name_pattern || "GenerateThroughFlow"}
                     onNavigate={(item, img) => setModal({ item, img })}
                     onClose={() => setModal(null)}
                 />

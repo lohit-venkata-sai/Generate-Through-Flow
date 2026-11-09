@@ -8,8 +8,10 @@ import { bgDownload, anchorDownload } from "./downloads";
 import { buildCharIndex, extractTags, handleVariants, splitPromptParts, type CharIndex, type ResolvedRef } from "./flowRefs";
 import { FLOW_ASPECT_CODES, FLOW_MODEL_CODES, FLOW_RECAPTCHA_KEY, FLOW_TAB_URLS } from "./flowModels";
 import { FLOW_RPC, extractFlowImageUrls, mineAgentToken, resolveRpcid } from "./flowRpc";
+import { imageFolderName, plannedName, planNames } from "./naming";
 import type { AutomationPrefs, GeneratedImage, ImageQuality, LogEntry, LogLevel, QueueItem, QueueStatus } from "../types";
 
+export { buildBaseName } from "./naming";
 export type { QueueItem, QueueStatus };
 
 async function exec<T>(tabId: number, func: (...args: never[]) => T, args: unknown[] = []): Promise<T | undefined> {
@@ -218,28 +220,6 @@ async function callRpc(tabId: number, op: string, args: Record<string, unknown>,
     return { ok: true as const, data: def.parse(res.data) };
 }
 
-function sanitize(name: string): string {
-    return name.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 80) || "flow-image";
-}
-
-export function buildBaseName(index: number, filename: string, prompt: string, prefs: AutomationPrefs): string {
-    // A #name marker is authoritative — it always wins over the custom pattern.
-    if (filename) return sanitize(filename);
-    if (prefs.customFilename) {
-        const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-        const idx = String(index + 1).padStart(3, "0");
-        return sanitize(
-            prefs.filenamePattern
-                .replaceAll("{index}", idx)
-                .replaceAll("{date}", date)
-                .replaceAll("{name}", `prompt-${idx}`),
-        );
-    }
-    const firstLine = prompt.split("\n").pop()?.trim() || "";
-    const slug = firstLine.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
-    return sanitize(slug ? `${String(index + 1).padStart(3, "0")}-${slug}` : `prompt-${String(index + 1).padStart(3, "0")}`);
-}
-
 async function b64ToPreviewUrl(b64: string): Promise<string> {
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
@@ -334,6 +314,9 @@ export class FlowRunner {
                         }
                         pageBlobs[n] = fittedUrl;
                     }
+                    // The https URL now differs from the bytes we hold — the
+                    // save path must not re-download it (see runOne).
+                    images[n].altered = true;
                 }
                 images[n].preview = await b64ToPreviewUrl(r.b64).catch(() => images[n].preview);
                 images[n].width = r.width;
@@ -388,6 +371,7 @@ export class FlowRunner {
                     void exec(tabId, flowRevokeUrl, [pageBlobs[n]]).catch(() => undefined);
                 }
                 pageBlobs[n] = made.blobUrl;
+                images[n].altered = true;
                 images[n].preview = await b64ToPreviewUrl(up.data.b64).catch(() => images[n].preview);
                 log("info", `${tag}: 2K upscale ready (image ${n + 1}).`);
             }
@@ -399,13 +383,14 @@ export class FlowRunner {
         ctx: {
             tabId: number; projectId: string; modelCode: string; aspectCode: number;
             folder: string; attempts: number; opts: RunOptions; chars: CharIndex;
+            namePlan: Map<number, string[]>;
             log: (level: LogLevel, msg: string) => void;
             touch: () => void;
             onItemDone: (images: number) => void;
             shared: { throttleUntil: number; lastStart: number; throttleHits: number; safeMode: boolean; circuitBroken: boolean; doneCount: number; consecFails: number; upscaleUnmappedWarned: boolean; upscaleDowngraded: boolean };
         },
     ): Promise<void> {
-        const { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone, shared } = ctx;
+        const { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, namePlan, log, touch, onItemDone, shared } = ctx;
         item.status = "running";
         item.detail = undefined;
         touch();
@@ -450,8 +435,13 @@ export class FlowRunner {
                     count: opts.imagesPerPrompt,
                 }, projectId);
                 if (!res.ok || !res.data?.urls?.length) throw new Error(res.error || "no image in reply");
-                // Pull bytes in-page: page blob URLs for the background
-                // download (folders honored), base64 for sidepanel preview.
+                // Remember what Flow titled this generation — the filename
+                // fallback when the prompt carries no #name. Only overwrite
+                // when present, so a retry without the field keeps the last one.
+                if (res.data.flowName) item.flowName = res.data.flowName;
+                // Pull bytes in-page: the page blob tracks quality-pass swaps
+                // (1080p/2K), base64 feeds the sidepanel preview — which is
+                // also what the flat save path writes to disk.
                 const images: GeneratedImage[] = [];
                 const pageBlobs: string[] = [];
                 const rawB64: (string | undefined)[] = [];
@@ -484,30 +474,47 @@ export class FlowRunner {
                     else log("error", `Flow rename failed for "${item.filename}" (${tag}): ${renamed.error}`);
                 }
                 if (opts.prefs.autoSave) {
-                    const base = buildBaseName(item.index, item.filename, item.prompt, opts.prefs);
                     for (let n = 0; n < images.length; n++) {
                         if (this.stopped) break;
                         // Whisk-style pacing (Gt=300ms): don't fire
                         // back-to-back downloads for multi-image prompts.
                         if (n > 0) await sleepBuffer(300, () => this.stopped);
                         if (this.stopped) break;
-                        const suffix = images.length > 1 ? (n === 0 ? "" : ` (${n})`) : "";
-                        const wanted = `${folder}/${base}${suffix}.png`;
-                        log("info", `Downloading image… (${base}${suffix}.png)`);
-                        // Page-blob first (proven path with the filename
-                        // suggester), https URL as fallback.
-                        const dl = await bgDownload(pageBlobs[n] || images[n].url, wanted);
+                        const name = plannedName(namePlan, item, n, opts.prefs);
+                        const wanted = `${folder}/${name}.png`;
+                        log("info", `Downloading image… (${name}.png)`);
+                        if (images[n].altered) {
+                            // 1080p/2K bytes exist only in the panel's preview;
+                            // the https URL still holds the ORIGINAL image, so
+                            // downloading it would silently undo the quality
+                            // step. Blob URLs can't take Chrome's `filename`
+                            // (and the suggest listener isn't applying names),
+                            // so save through an anchor — it always honors the
+                            // exact name, flat in the Downloads root.
+                            const src = images[n].preview || images[n].url;
+                            try {
+                                anchorDownload(await (await fetch(src)).blob(), `${name}.png`);
+                            } catch {
+                                throw new Error("download failed: quality-fit bytes unavailable");
+                            }
+                            log("info", `Saved ${name}.png (quality-fit bytes save to the Downloads folder root)`);
+                            continue;
+                        }
+                        // Direct https URL + filename is the one path where
+                        // Chrome honors the name AND subfolders itself — no
+                        // dependence on the filename-suggest listener.
+                        const dl = await bgDownload(images[n].url, wanted);
                         if (dl.error) {
                             log("error", `Folder save failed (${dl.error}) — saving flat…`);
                             try {
                                 const src = images[n].preview || images[n].url;
-                                anchorDownload(await (await fetch(src)).blob(), `${base}${suffix}.png`);
+                                anchorDownload(await (await fetch(src)).blob(), `${name}.png`);
                             } catch {
                                 throw new Error(`download failed: ${dl.error}`);
                             }
                         } else if (dl.savedAs) {
                             const savedBase = dl.savedAs.split(/[\\/]/).pop();
-                            const wantedBase = `${base}${suffix}.png`;
+                            const wantedBase = `${name}.png`;
                             if (savedBase !== wantedBase) {
                                 log("error", `Chrome renamed the file to "${savedBase}" (wanted "${wantedBase}") — check for downloader/renamer extensions or Chrome's ask-where-to-save setting.`);
                             } else {
@@ -516,7 +523,7 @@ export class FlowRunner {
                         }
                     }
                     if (this.stopped) break;
-                    log("success", `Saved ${base}.png`);
+                    log("success", `Saved images to ${folder}/`);
                 }
                 for (const b of pageBlobs) {
                     setTimeout(() => {
@@ -630,9 +637,9 @@ export class FlowRunner {
         }
         const modelCode = FLOW_MODEL_CODES[opts.model] ?? "BELUGA";
         const aspectCode = FLOW_ASPECT_CODES[opts.aspectRatio] ?? 3;
-        const baseFolder = sanitize(opts.folder || "GenerateThroughFlow");
-        const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-        const folder = `${baseFolder}/GTF_${dateStamp}`;
+        // One folder per day, base + date first: GenerateThroughFlow091126.
+        // The ZIP and the single-image modal derive the same string.
+        const folder = imageFolderName(opts.folder);
         const attempts = 1 + Math.max(0, opts.prefs.retries);
         const parallel = Math.min(10, Math.max(1, opts.prefs.parallel ?? 1));
         const bufferMs = Math.min(120_000, Math.max(0, opts.prefs.bufferSec ?? 0)) * 1000;
@@ -664,7 +671,10 @@ export class FlowRunner {
         const shared = { throttleUntil: 0, lastStart: 0, throttleHits: 0, safeMode: false, circuitBroken: false, stopReason: null as null | "block" | "session", doneCount: 0, consecFails: 0, upscaleUnmappedWarned: false, upscaleDowngraded: false };
         // No mid-run tab refresh: the Flow tab stays untouched for the whole
         // batch so in-flight API calls are never interrupted.
-        const ctx = { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone: (n: number) => ev.onItemDone?.(n), shared };
+        // Names are planned for the whole batch up front: parallel workers
+        // and a later ZIP build must agree on who gets "1-01" vs "1-01(1)".
+        const namePlan = planNames(state, opts.prefs, opts.imagesPerPrompt);
+        const ctx = { tabId, projectId, modelCode, aspectCode, folder, attempts, opts, chars, log, touch, onItemDone: (n: number) => ev.onItemDone?.(n), shared, namePlan };
         const worker = async (slot: number) => {
             // Stagger worker starts so the opening burst doesn't trip Google's
             // abuse detection ("unusual activity").

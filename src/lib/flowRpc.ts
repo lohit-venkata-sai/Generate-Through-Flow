@@ -5,7 +5,7 @@
 export interface RpcDef {
     rpcid: string;
     build: (args: Record<string, unknown>) => unknown[];
-    parse: (data: unknown) => { urls: string[]; ids: string[]; workflowId: string | null; b64?: string };
+    parse: (data: unknown) => { urls: string[]; ids: string[]; workflowId: string | null; b64?: string; flowName?: string };
 }
 
 /** Local override for simulating a server-side rpcid rotation (no backend). */
@@ -82,7 +82,7 @@ export const FLOW_RPC: Record<string, RpcDef> = {
                 .map((r) => (r.match(/\/image\/([a-f0-9-]+)/) || [])[1])
                 .filter(Boolean);
             const first = (e as unknown[][])?.[0]?.[0] as { [k: number]: unknown } | undefined;
-            return { urls: found, ids, workflowId: (first?.[2] as string) ?? null };
+            return { urls: found, ids, workflowId: (first?.[2] as string) ?? null, flowName: mineWorkflowName(e) };
         },
     },
     renameWorkflow: {
@@ -145,6 +145,53 @@ export const FLOW_RPC: Record<string, RpcDef> = {
         parse: () => ({ urls: [], ids: [], workflowId: null }),
     },
 };
+
+/**
+ * What Flow titled this generation, if the response carries it. Two probes:
+ * the workflow object mirrors the rename request's shape
+ * `[id, null, null, [name], projectId]`, and any display_name/title string
+ * anywhere in the payload. Returns undefined when Flow didn't say — callers
+ * fall back to the prompt.
+ */
+export function mineWorkflowName(data: unknown): string | undefined {
+    const clean = (s: string): string | undefined => {
+        const t = s.trim().replace(/\s+/g, " ");
+        // Reject over-long strings and raw ids — those are payloads, not titles.
+        if (!t || t.length > 160 || /^[0-9a-f-]{20,}$/i.test(t)) return undefined;
+        return t;
+    };
+    const first = (data as unknown[][])?.[0]?.[0];
+    // Only probe the `[id, null, null, [name], projectId]` slot when this
+    // really looks like the workflow object (its id sits at [2], same place
+    // generateImage.parse reads workflowId from).
+    if (Array.isArray(first) && typeof first[2] === "string") {
+        const slot = first[3];
+        if (Array.isArray(slot) && typeof slot[0] === "string") {
+            const n = clean(slot[0]);
+            if (n) return n;
+        }
+    }
+    let hit: string | undefined;
+    const walk = (node: unknown): void => {
+        if (hit || node == null) return;
+        if (Array.isArray(node)) {
+            for (const el of node) walk(el);
+            return;
+        }
+        if (typeof node === "object") {
+            for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+                if (typeof v === "string" && /^(display_?name|title)$/i.test(k)) {
+                    const n = clean(v);
+                    if (n) { hit = n; return; }
+                    continue;
+                }
+                walk(v);
+            }
+        }
+    };
+    walk(data);
+    return hit;
+}
 
 /** Lowercase v4 uuid for agent request ids (matches captured traffic). */
 function newUuid(): string {
