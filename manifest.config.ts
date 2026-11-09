@@ -5,7 +5,7 @@ import { defineManifest } from "@crxjs/vite-plugin";
  * vite.config.ts can inline it into the UI footer from this same literal,
  * keeping the footer and the installed version from ever drifting apart.
  */
-export const APP_VERSION = "1.5.0";
+export const APP_VERSION = "1.5.5";
 
 export default defineManifest({
     manifest_version: 3,
