@@ -9,7 +9,7 @@ import { HelpFeedbackCard } from './components/HelpFeedbackCard'
 import { SettingsView } from './components/SettingsView'
 import { SetupView } from './components/SetupView'
 import { TourOverlay } from './components/TourOverlay'
-import { defaultBatchName, defaultPrefs, addTodayCount, loadHelpDismissed, loadHistory, loadPrefs, loadPresets, loadTodayCount, loadTourSeen, saveHelpDismissed, saveHistory, savePrefs, savePresets, saveTourSeen, uid } from './lib/store'
+import { defaultBatchName, defaultPrefs, addTodayCount, loadHistory, loadPrefs, loadPresets, loadTodayCount, loadTourSeen, saveHistory, savePrefs, savePresets, saveTourSeen, uid } from './lib/store'
 import type { AppView, AutomationPrefs, BatchRecord, FormValues, LogEntry, LogLevel, Mode, QueueItem, SavedPreset } from './types'
 
 const STORAGE_KEY = "flowpilot-form-values"
@@ -80,7 +80,9 @@ function App() {
   const [queueItems, setQueueItems] = useState<QueueItem[]>([])
   const [queueLogs, setQueueLogs] = useState<LogEntry[]>([])
   const [showTour, setShowTour] = useState(false)
-  const [showHelp, setShowHelp] = useState(false)
+  // Help & Feedback card: shown on every open, closed manually for that
+  // session only — deliberately NOT persisted, so it comes back next time.
+  const [showHelp, setShowHelp] = useState(true)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [todayCount, setTodayCount] = useState(0)
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -125,10 +127,6 @@ function App() {
     loadTourSeen().then((seen) => {
       if (!seen) setShowTour(true)
     }).catch(() => undefined)
-    // Help & Feedback card — stays hidden forever once dismissed.
-    loadHelpDismissed().then((dismissed) => {
-      if (!dismissed) setShowHelp(true)
-    }).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -154,7 +152,6 @@ function App() {
   };
 
   const handleDismissHelp = () => {
-    void saveHelpDismissed().catch(() => undefined);
     setShowHelp(false);
   };
 

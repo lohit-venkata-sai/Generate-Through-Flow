@@ -7,7 +7,6 @@ const HISTORY_KEY = "flowpilot-history";
 const PREFS_KEY = "flowpilot-prefs";
 const RESUME_KEY = "flowpilot-resume";
 const TOUR_SEEN_KEY = "flowpilot-tour-seen-v1";
-const HELP_DISMISSED_KEY = "flowpilot-help-dismissed-v1";
 
 export const defaultPrefs: AutomationPrefs = {
     autoSave: true,
@@ -59,13 +58,6 @@ export const loadTourSeen = async (): Promise<boolean> => {
     return seen === true;
 };
 export const saveTourSeen = (): Promise<void> => set(TOUR_SEEN_KEY, true);
-
-/** Help & Feedback card dismissal (single local flag — no account). */
-export const loadHelpDismissed = async (): Promise<boolean> => {
-    const dismissed = await get<boolean>(HELP_DISMISSED_KEY);
-    return dismissed === true;
-};
-export const saveHelpDismissed = (): Promise<void> => set(HELP_DISMISSED_KEY, true);
 
 export function todayKey(d = new Date()): string {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
