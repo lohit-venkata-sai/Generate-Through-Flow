@@ -1,15 +1,22 @@
 /**
- * Help & Feedback destinations. All three land in the Discord server.
+ * The single Help & Feedback destination.
  *
- * The two channel links are `discord.com/channels/...` deep links, so they
- * only resolve for readers who are already signed in AND already members —
- * `joinDiscord` is the invite that gets newcomers in the door.
+ * Only the server invite is used. The bug-report and feature-request
+ * channels were linked directly at first, but `discord.com/channels/...`
+ * deep links resolve ONLY for readers who are already signed into Discord
+ * AND already members — everyone else lands in a dead end with no prompt
+ * to join (Discord does not redirect non-members to an invite).
+ *
+ * Rescuing them automatically would need a membership check, which is not
+ * possible from the browser: every real route (bot + backend, or OAuth2
+ * `guilds.members.read`) needs a server this extension no longer runs.
+ *
+ * If you ever want the channel buttons back, create an invite FROM each
+ * channel (Create Invite → Edit invite link → Expire After: Never,
+ * Max Uses: No Limit) — channel-specific invites work for members and
+ * non-members alike and land new users in the right channel.
  *
  * Kept out of the component file: eslint's react-refresh rule requires a
  * file that defines components to export components only.
  */
-export const HELP_LINKS = {
-    reportIssue: "https://discord.com/channels/1557281873070391376/1560498008167284868",
-    requestFeature: "https://discord.com/channels/1557281873070391376/1569361039366291486",
-    joinDiscord: "https://discord.gg/NxrthkM8y",
-} as const;
+export const DISCORD_INVITE = "https://discord.gg/NxrthkM8y";

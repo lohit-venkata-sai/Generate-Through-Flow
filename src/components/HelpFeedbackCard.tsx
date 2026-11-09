@@ -1,5 +1,5 @@
-import { Bug, Lightbulb, X } from "lucide-react";
-import { HELP_LINKS } from "../lib/helpLinks";
+import { X } from "lucide-react";
+import { DISCORD_INVITE } from "../lib/helpLinks";
 
 /**
  * Discord mark, inlined rather than referenced from public/icons.svg —
@@ -25,12 +25,6 @@ interface HelpFeedbackCardProps {
 }
 
 export function HelpFeedbackCard({ onDismiss }: HelpFeedbackCardProps) {
-    // min-w keeps each pill legible; flex-1 lets a wide side panel fit all
-    // three in one row (as in the design) while a narrow one wraps instead
-    // of truncating "Request Feature".
-    const pill =
-        "inline-flex min-w-[8.5rem] flex-1 items-center justify-center gap-1.5 rounded-full border border-border bg-accent px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-primary/60 hover:text-primary active:scale-[0.98]";
-
     return (
         <section
             aria-label="Help and feedback"
@@ -54,19 +48,17 @@ export function HelpFeedbackCard({ onDismiss }: HelpFeedbackCardProps) {
             </div>
 
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                Found a bug or have an idea? Tell us in Discord — the community helps shape what ships next.
+                Found a bug or have an idea? Join us on Discord — that's where issues get
+                reported and feature requests land.
             </p>
 
             <div className="mt-3 flex flex-wrap gap-2">
-                <a href={HELP_LINKS.reportIssue} target="_blank" rel="noopener noreferrer" className={pill}>
-                    <Bug className="size-3.5 shrink-0" />
-                    Report Issue
-                </a>
-                <a href={HELP_LINKS.requestFeature} target="_blank" rel="noopener noreferrer" className={pill}>
-                    <Lightbulb className="size-3.5 shrink-0" />
-                    Request Feature
-                </a>
-                <a href={HELP_LINKS.joinDiscord} target="_blank" rel="noopener noreferrer" className={pill}>
+                <a
+                    href={DISCORD_INVITE}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-accent px-4 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-primary/60 hover:text-primary active:scale-[0.98]"
+                >
                     <DiscordMark className="size-3.5 shrink-0" />
                     Join Discord
                 </a>
