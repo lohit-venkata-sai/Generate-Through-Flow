@@ -5,10 +5,11 @@ import { AgentView } from './components/AgentView'
 import { AutomateView } from './components/AutomateView'
 import { HistoryView } from './components/HistoryView'
 import { ModeTabs } from './components/ModeTabs'
+import { HelpFeedbackCard } from './components/HelpFeedbackCard'
 import { SettingsView } from './components/SettingsView'
 import { SetupView } from './components/SetupView'
 import { TourOverlay } from './components/TourOverlay'
-import { defaultBatchName, defaultPrefs, addTodayCount, loadHistory, loadPrefs, loadPresets, loadTodayCount, loadTourSeen, saveHistory, savePrefs, savePresets, saveTourSeen, uid } from './lib/store'
+import { defaultBatchName, defaultPrefs, addTodayCount, loadHelpDismissed, loadHistory, loadPrefs, loadPresets, loadTodayCount, loadTourSeen, saveHelpDismissed, saveHistory, savePrefs, savePresets, saveTourSeen, uid } from './lib/store'
 import type { AppView, AutomationPrefs, BatchRecord, FormValues, LogEntry, LogLevel, Mode, QueueItem, SavedPreset } from './types'
 
 const STORAGE_KEY = "flowpilot-form-values"
@@ -79,6 +80,7 @@ function App() {
   const [queueItems, setQueueItems] = useState<QueueItem[]>([])
   const [queueLogs, setQueueLogs] = useState<LogEntry[]>([])
   const [showTour, setShowTour] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [todayCount, setTodayCount] = useState(0)
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -123,6 +125,10 @@ function App() {
     loadTourSeen().then((seen) => {
       if (!seen) setShowTour(true)
     }).catch(() => undefined)
+    // Help & Feedback card — stays hidden forever once dismissed.
+    loadHelpDismissed().then((dismissed) => {
+      if (!dismissed) setShowHelp(true)
+    }).catch(() => undefined)
   }, [])
 
   useEffect(() => {
@@ -145,6 +151,11 @@ function App() {
   const handleTourDone = () => {
     void saveTourSeen().catch(() => undefined);
     setShowTour(false);
+  };
+
+  const handleDismissHelp = () => {
+    void saveHelpDismissed().catch(() => undefined);
+    setShowHelp(false);
   };
 
   const handleComplete = async (items: QueueItem[], elapsedMs: number) => {
@@ -261,6 +272,10 @@ function App() {
             </button>
           </div>
         </header>
+
+        {view === "main" && showHelp && (
+          <HelpFeedbackCard onDismiss={handleDismissHelp} />
+        )}
 
         {view !== "main" && (
           <div className="mb-4 flex justify-start">
