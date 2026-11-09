@@ -303,8 +303,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
     };
 
     const downloadAll = async () => {
-        if (!allDone) return;
-        pushLog("info", "Packing all images into a ZIP…");
+        pushLog("info", "Packing generated images into a ZIP…");
         const dateStamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
         const files: { name: string; data: Uint8Array }[] = [];
         for (const item of items) {
@@ -580,8 +579,8 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                         <button
                             type="button"
                             onClick={downloadAll}
-                            disabled={!allDone || running}
-                            title={allDone ? "Download every generated image as one ZIP" : "Available once all images are generated"}
+                            disabled={running}
+                            title={running ? "Available once the run stops" : allDone ? "Download every generated image as one ZIP" : "Download the images generated so far"}
                             className="mt-2.5 inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl bg-primary text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-45"
                         >
                             <Download className="size-3.5" />
