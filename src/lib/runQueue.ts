@@ -139,6 +139,18 @@ export function isThrottleError(msg: string): boolean {
         || t.includes("try again later") || t.includes("try again shortly");
 }
 
+/**
+ * Google refused the prompt on content-safety grounds
+ * (google.rpc.ErrorInfo / PUBLIC_ERROR_UNSAFE_GENERATION).
+ *
+ * Unlike a throttle, this verdict is reached on the prompt text we sent,
+ * so replaying the identical prompt cannot pass — it must not consume
+ * retries, and it says nothing about session health.
+ */
+export function isUnsafeError(msg?: string): boolean {
+    return (msg || "").toLowerCase().includes("unsafe_generation");
+}
+
 /** Cooldown before retrying a throttled request (escalates per attempt).
  * First entry is deliberately "a few minutes": a 45s retry after a long
  * burst just re-trips the block and makes it sticky. Note: in-run retries
@@ -521,6 +533,14 @@ export class FlowRunner {
             } catch (e) {
                 lastError = (e as Error).message;
                 if (this.stopped) break;
+                if (isUnsafeError(lastError)) {
+                    // The safety verdict is about the prompt itself, so the
+                    // identical retry can never pass — fail fast and say so
+                    // instead of burning every remaining attempt.
+                    const saved = attempts - attempt;
+                    log("error", `${tag}: Google's safety filter rejected this prompt${saved > 0 ? ` — skipping ${saved} remaining retr${saved === 1 ? "y" : "ies"}` : ""}. Reword the prompt to continue.`);
+                    break;
+                }
                 if (attempt < attempts) {
                     if (isThrottleError(lastError)) {
                         shared.throttleHits++;
@@ -695,7 +715,11 @@ export class FlowRunner {
                 } else if (next.status === "error") {
                     // Whisk-style 8-in-a-row rule: a dead session fails every
                     // prompt — stop the batch instead of burning all retries.
-                    if (++shared.consecFails >= CONSEC_FAIL_STOP) {
+                    // Safety-filter rejections are excluded: they are a verdict
+                    // on the prompt, not the session, so counting them would
+                    // park the batch behind advice ("check your VPN / refresh")
+                    // that cannot fix a prompt Google simply won't render.
+                    if (!isUnsafeError(next.detail) && ++shared.consecFails >= CONSEC_FAIL_STOP) {
                         shared.circuitBroken = true;
                         shared.stopReason = "session";
                         log("error", `${CONSEC_FAIL_STOP} prompts failed in a row — stopping batch. Check the Flow tab (try one manual generation; if that fails too, turn off VPN / refresh / new project) and Resume later.`);
@@ -804,6 +828,7 @@ export function friendlyError(detail?: string): string {
     if (t.includes("rate limited") || t.includes("429")) return "Rate limited — auto-cooling down, or retry at 2×";
     if (t.includes("permission") || t.includes("403") || t.includes("auth") || t.includes("sign in")) return "Session expired — reload the Flow tab";
     if (t.includes("recaptcha")) return "reCAPTCHA blocked — reload the Flow tab";
+    if (t.includes("unsafe_generation")) return "Google's safety filter rejected this prompt — reword it; retrying as-is can't pass";
     if (t.includes("no image in reply")) return "Flow returned no image — retry";
     if (t.includes("aborted") || t.includes("stopped")) return "Stopped";
     const oneLine = detail.replace(/\s+/g, " ").trim();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBaseName, friendlyError, isThrottleError, splitFilename, THROTTLE_COOLDOWNS_MS } from "./runQueue";
+import { buildBaseName, friendlyError, isThrottleError, isUnsafeError, splitFilename, THROTTLE_COOLDOWNS_MS } from "./runQueue";
 import type { AutomationPrefs } from "../types";
 
 const prefs: AutomationPrefs = {
@@ -59,5 +59,38 @@ describe("throttle handling", () => {
   it("friendlyError guides throttled users to slow down", () => {
     expect(friendlyError("unusual_activity")).toContain("1×");
     expect(friendlyError("HTTP 429")).toContain("2×");
+  });
+});
+
+// The exact payload a user pasted from a rejected generation. Everything
+// readable in it lives in the ErrorInfo reason; the rest is transport.
+const UNSAFE_RAW = `rpc: "rpc [3,null,[[\\"type.googleapis.com/google.rpc.ErrorInfo\\",[\\"PUBLIC_ERROR_UNSAFE_GENERATION\\"]]]]" | raw: 196 [["wrb.fr","ogiZ0b",null,null,null,[3,null,[["type.googleapis.com/google.rpc.ErrorInfo",["PUBLIC_ERROR_UNSAFE_GENERATION"]]]],"generic"],["di",5254],["af.httprm",5253,"-3446539333232816591",37]] 25 [["e",4,null,null,232]]`;
+
+describe("safety-filter detection", () => {
+  it("recognizes the real PUBLIC_ERROR_UNSAFE_GENERATION payload", () => {
+    expect(isUnsafeError(UNSAFE_RAW)).toBe(true);
+    expect(isUnsafeError("PUBLIC_ERROR_UNSAFE_GENERATION")).toBe(true);
+    expect(isUnsafeError("error: unsafe_generation")).toBe(true);
+  });
+
+  it("does not fire on other errors", () => {
+    expect(isUnsafeError("unusual_activity")).toBe(false);
+    expect(isUnsafeError("no image in reply")).toBe(false);
+    expect(isUnsafeError("")).toBe(false);
+    expect(isUnsafeError(undefined)).toBe(false);
+  });
+
+  it("is not a throttle — backoff cannot pass a content verdict", () => {
+    // The two must stay disjoint: throttle gets cooldowns, unsafe gets none.
+    expect(isThrottleError(UNSAFE_RAW)).toBe(false);
+  });
+
+  it("friendlyError tells the user to reword instead of dumping raw bytes", () => {
+    const msg = friendlyError(UNSAFE_RAW);
+    expect(msg).toContain("safety filter");
+    expect(msg).toContain("reword");
+    // It replaces the old raw dump — the whole point is readable, short text.
+    expect(msg.length).toBeLessThan(160);
+    expect(msg).not.toContain("google.rpc.ErrorInfo");
   });
 });

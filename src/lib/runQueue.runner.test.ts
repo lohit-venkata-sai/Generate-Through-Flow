@@ -297,3 +297,52 @@ describe("quality fallbacks", () => {
         expect(logs.some((l) => l.includes("2K upscale ready"))).toBe(false);
     });
 });
+
+// Real payload from a rejected generation: Google refused the PROMPT text,
+// so replaying the identical prompt cannot pass — no retry, no breaker blame.
+const UNSAFE_RAW = `rpc: "rpc [3,null,[[\\"type.googleapis.com/google.rpc.ErrorInfo\\",[\\"PUBLIC_ERROR_UNSAFE_GENERATION\\"]]]]" | raw: 196 [["wrb.fr","ogiZ0b",null,null,null,[3,null,[["type.googleapis.com/google.rpc.ErrorInfo",["PUBLIC_ERROR_UNSAFE_GENERATION"]]]],"generic"],["di",5254],["af.httprm",5253,"-3446539333232816591",37]] 25 [["e",4,null,null,232]]`;
+
+describe("safety-filter rejections", () => {
+    it("fails fast instead of burning retries on an identical safety verdict", async () => {
+        stubConnection();
+        let genCalls = 0;
+        on("flowBatchExecute", ([rpcid]) => {
+            if (rpcid === GEN_RPCID) genCalls++;
+            return { error: UNSAFE_RAW };
+        });
+        const logs: string[] = [];
+
+        const result = await drain(
+            new FlowRunner(),
+            makeItems(1),
+            makeOpts({ prefs: { ...defaultPrefs, retries: 3, parallel: 1, bufferSec: 0 } }),
+            collector(logs),
+        );
+
+        // 4 attempts were allowed; the first rejection ends it — the other 3
+        // are pure waste because the verdict is about the prompt, not timing.
+        expect(genCalls).toBe(1);
+        expect(result[0].status).toBe("error");
+        expect(result[0].detail).toContain("PUBLIC_ERROR_UNSAFE_GENERATION");
+        expect(logs.some((l) => l.includes("skipping 3 remaining retries"))).toBe(true);
+        expect(logs.some((l) => l.includes("safety filter"))).toBe(true);
+    });
+
+    it("does not let content rejections trip the 8-in-a-row session breaker", async () => {
+        stubConnection();
+        on("flowBatchExecute", () => ({ error: UNSAFE_RAW }));
+        const logs: string[] = [];
+
+        const result = await drain(new FlowRunner(), makeItems(10), makeOpts(), collector(logs));
+
+        // Every prompt is rejected on content grounds — all 10 must run (the
+        // session itself is healthy) and none may stay queued for Resume.
+        expect(result).toHaveLength(10);
+        expect(result.every((i) => i.status === "error")).toBe(true);
+        expect(result.filter((i) => i.status === "pending")).toHaveLength(0);
+        // The breaker's VPN/refresh advice must stay out of a prompt problem.
+        expect(logs.some((l) => l.includes("8 prompts failed in a row"))).toBe(false);
+        expect(logs.some((l) => l.includes("Run parked"))).toBe(false);
+        expect(logs.some((l) => l.includes("turn off VPN"))).toBe(false);
+    });
+});
