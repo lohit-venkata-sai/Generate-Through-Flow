@@ -349,7 +349,7 @@ function App() {
           )}
         </main>
         <p className="mt-auto pt-6 text-center text-[11px] text-muted-foreground">
-          Free forever · runs locally in your Flow project tab — no servers.
+          Runs locally in your Flow project tab — no servers. · v{__APP_VERSION__}
         </p>
       </div>
       {showTour && <TourOverlay onDone={handleTourDone} />}

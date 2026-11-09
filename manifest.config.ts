@@ -1,11 +1,18 @@
 import { defineManifest } from "@crxjs/vite-plugin";
 
+/**
+ * Extension version — the value chrome://extensions shows. Exported so
+ * vite.config.ts can inline it into the UI footer from this same literal,
+ * keeping the footer and the installed version from ever drifting apart.
+ */
+export const APP_VERSION = "1.5.0";
+
 export default defineManifest({
     manifest_version: 3,
 
     name: "Generate Through Flow",
 
-    version: "1.5.0",
+    version: APP_VERSION,
 
     description:
         "Automate bulk AI content generation through Google Flow.",
