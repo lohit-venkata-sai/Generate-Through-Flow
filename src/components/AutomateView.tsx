@@ -3,7 +3,7 @@ import {
     Check, CircleAlert, CircleCheck, Copy, Download, Image as ImageIcon, Loader2, OctagonX,
     Play, RotateCcw, Trash2,
 } from "lucide-react";
-import { parsePrompts } from "../lib/promptParser";
+import { countUnusablePrompts, parsePrompts } from "../lib/promptParser";
 import {
     buildBaseName, checkFlowConnection, FlowRunner, friendlyError, indexProjectCharacters, splitFilename,
 } from "../lib/runQueue";
@@ -136,6 +136,9 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
     }, []);
 
     const hasRun = items.length > 0;
+    // Same gate as SetupView's Continue: never launch a queue that still
+    // holds a blank or unedited "New prompt — tap to edit" row.
+    const canStart = prompts.length > 0 && countUnusablePrompts(prompts) === 0;
     const displayItems: QueueItem[] = hasRun ? items : prompts.map((raw, index) => {
         const { filename, prompt } = splitFilename(raw);
         return { index, prompt, filename, status: "pending" as const, images: [], refs: [] };
@@ -238,6 +241,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
     };
 
     const handleStart = () => {
+        if (!canStart) return;
         const initial: QueueItem[] = prompts.map((raw, index) => {
             const { filename, prompt } = splitFilename(raw);
             return { index, prompt, filename, status: "pending" as const, images: [], refs: [] };
@@ -371,8 +375,9 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                     <button
                         type="button"
                         onClick={handleStart}
-                        disabled={prompts.length === 0}
-                        className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-45 ${prompts.length > 0 ? "start-glow" : ""}`}
+                        disabled={!canStart}
+                        title={canStart ? undefined : prompts.length === 0 ? "Add at least one prompt first" : "Edit or delete the placeholder prompts first"}
+                        className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-45 ${canStart ? "start-glow" : ""}`}
                     >
                         <Play className="size-3.5" />
                         {items.length ? "Restart" : "Start"}

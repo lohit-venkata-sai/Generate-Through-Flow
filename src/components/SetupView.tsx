@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, BookmarkPlus, Check, GripVertical, Plus, Trash2 } from "lucide-react";
-import { parsePrompts } from "../lib/promptParser";
+import { countUnusablePrompts, parsePrompts, PROMPT_PLACEHOLDER } from "../lib/promptParser";
 import { Dropdown } from "./Dropdown";
 import type { FormValues } from "../types";
 
@@ -41,6 +41,10 @@ function NativeSelect({ value, onChange, options, aria }: {
 
 export function SetupView({ formValues, setFormValues, onSavePreset, onContinue }: SetupViewProps) {
     const prompts = parsePrompts(formValues.user_prompts, formValues.separator);
+    // Blank rows can't survive the text round-trip (parsePrompts strips
+    // them), but the Add-row placeholder can — it is real, non-empty text.
+    const unusable = countUnusablePrompts(prompts);
+    const canContinue = prompts.length > 0 && unusable === 0;
     const [saved, setSaved] = useState(false);
     useEffect(() => {
         setSaved(false);
@@ -66,8 +70,8 @@ export function SetupView({ formValues, setFormValues, onSavePreset, onContinue 
     const add = () => {
         const joiner = formValues.separator === "new-line" ? "\n" : "\n\n";
         const text = formValues.user_prompts.trim()
-            ? formValues.user_prompts.replace(/\s+$/, "") + joiner + "New prompt — tap to edit"
-            : "New prompt — tap to edit";
+            ? formValues.user_prompts.replace(/\s+$/, "") + joiner + PROMPT_PLACEHOLDER
+            : PROMPT_PLACEHOLDER;
         const parsed = parsePrompts(text, formValues.separator);
         setFormValues((p) => ({ ...p, user_prompts: text, total_prompts: parsed.length }));
     };
@@ -205,10 +209,17 @@ export function SetupView({ formValues, setFormValues, onSavePreset, onContinue 
                 </div>
             </section>
 
+            {unusable > 0 && (
+                <p className="mb-2 rounded-xl border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-center text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                    {unusable === 1 ? "1 prompt is" : `${unusable} prompts are`} still {unusable === 1 ? "empty" : "empty or unedited"} —
+                    type your prompt or delete {unusable === 1 ? "the row" : "those rows"} to continue.
+                </p>
+            )}
             <button
                 type="button"
                 onClick={onContinue}
-                disabled={prompts.length === 0}
+                disabled={!canContinue}
+                title={canContinue ? undefined : prompts.length === 0 ? "Add at least one prompt first" : "Edit or delete the placeholder prompts first"}
                 className="flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-primary text-sm font-semibold text-primary-foreground shadow-md transition-all hover:bg-primary/90 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-45"
             >
                 Continue
