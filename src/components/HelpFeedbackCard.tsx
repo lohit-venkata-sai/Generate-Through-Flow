@@ -48,8 +48,11 @@ export function HelpFeedbackCard({ onDismiss }: HelpFeedbackCardProps) {
             </div>
 
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                Found a bug or have an idea? Join us on Discord — that's where issues get
-                reported and feature requests land.
+                <span className="font-semibold text-foreground">
+                    Found a bug or have a feature idea?
+                </span>{" "}
+                We'd love to hear from you! Every feature in here started as
+                someone's "what if…" — this one's yours.
             </p>
 
             <div className="mt-3 flex flex-wrap gap-2">
