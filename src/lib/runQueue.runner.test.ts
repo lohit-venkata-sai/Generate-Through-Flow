@@ -341,6 +341,57 @@ describe("file naming", () => {
     });
 });
 
+describe("retry bookkeeping", () => {
+    it("a failed attempt's images never leak into item.images — ZIP/modal see only the final attempt", async () => {
+        stubSuccess();
+        // Attempt 1 pulls its image (pushed into the local `images` array),
+        // then the save itself dies: the folder download errors and the flat
+        // anchor fallback throws. Attempt 2 saves cleanly.
+        vi.mocked(bgDownload).mockResolvedValueOnce({ error: "network down" });
+        vi.mocked(anchorDownload).mockImplementationOnce(() => {
+            throw new Error("no anchor");
+        });
+
+        const result = await drain(
+            new FlowRunner(),
+            makeItems(1),
+            makeOpts({ prefs: { ...defaultPrefs, retries: 1, parallel: 1, bufferSec: 0 } }),
+            collector([]),
+        );
+
+        expect(result[0].status).toBe("done");
+        // item.images is REPLACED on success, never appended: attempt 1's
+        // pushed image must be gone. An accumulating implementation would
+        // report 2 here — and the ZIP/modal read exactly this array.
+        expect(result[0].images).toHaveLength(1);
+        expect(vi.mocked(bgDownload)).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(anchorDownload)).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-running a not-done item replaces its images instead of stacking them", async () => {
+        stubSuccess();
+        // Contract behind "the ZIP packs only the latest images": a non-done
+        // item fed back into run() (error → re-run) must come out with ONLY
+        // the fresh attempt's images. Stale ones stacking up would multiply
+        // every ZIP entry and modal page.
+        const seeded: QueueItem[] = [{
+            index: 0,
+            prompt: "Prompt 1",
+            filename: "",
+            status: "error",
+            images: [{ url: "https://flow-content.google/image/stale" }],
+            refs: [],
+        }];
+
+        const result = await drain(new FlowRunner(), seeded, makeOpts(), collector([]));
+
+        expect(result[0].status).toBe("done");
+        expect(result[0].images).toHaveLength(1);
+        // The one image present is the fresh one, not the seeded stale one.
+        expect(result[0].images[0].url).toBe(IMAGE_URL);
+    });
+});
+
 // Real payload from a rejected generation: Google refused the PROMPT text,
 // so replaying the identical prompt cannot pass — no retry, no breaker blame.
 const UNSAFE_RAW = `rpc: "rpc [3,null,[[\\"type.googleapis.com/google.rpc.ErrorInfo\\",[\\"PUBLIC_ERROR_UNSAFE_GENERATION\\"]]]]" | raw: 196 [["wrb.fr","ogiZ0b",null,null,null,[3,null,[["type.googleapis.com/google.rpc.ErrorInfo",["PUBLIC_ERROR_UNSAFE_GENERATION"]]]],"generic"],["di",5254],["af.httprm",5253,"-3446539333232816591",37]] 25 [["e",4,null,null,232]]`;
