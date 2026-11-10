@@ -140,3 +140,14 @@ export function plannedName(
 ): string {
     return plan?.get(item.index)?.[n] ?? desiredBaseName(item, prefs);
 }
+
+/**
+ * Did Chrome actually place the file INSIDE the requested folder? Compares
+ * the absolute path it reports against the relative path we asked for —
+ * basename-only comparison can't tell "folder/1-01.png" from a flat
+ * "Downloads/1-01.png".
+ */
+export function savedIntoFolder(savedAs: string, wanted: string): boolean {
+    const norm = savedAs.replace(/\\/g, "/");
+    return norm === wanted || norm.endsWith(`/${wanted}`);
+}

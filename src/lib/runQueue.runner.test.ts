@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FlowRunner } from "./runQueue";
 import type { RunEvents, RunOptions } from "./runQueue";
 import { anchorDownload, bgDownload } from "./downloads";
+import { imageFolderName } from "./naming";
 import { FLOW_RPC } from "./flowRpc";
 import { defaultPrefs } from "./store";
 import type { LogLevel, QueueItem } from "../types";
@@ -271,10 +272,13 @@ describe("quality fallbacks", () => {
         const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ quality: "1080p" }), collector(logs));
 
         expect(result[0].status).toBe("done");
-        // The fitted bytes differ from what the URL serves, so the URL path is
-        // skipped entirely — the anchor saves the exact planned name instead.
-        expect(vi.mocked(bgDownload)).not.toHaveBeenCalled();
-        expect(vi.mocked(anchorDownload).mock.calls[0][1]).toBe("Prompt 1.png");
+        // The fitted bytes differ from what the URL serves, so step 1 is
+        // skipped — step 2 saves the held bytes as a blob THROUGH the folder
+        // path (this used to drop flat to the root via an anchor).
+        expect(vi.mocked(bgDownload)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(bgDownload).mock.calls[0][0]).toMatch(/^blob:/);
+        expect(vi.mocked(bgDownload).mock.calls[0][1]).toMatch(/^TestFlow\d{6}\/Prompt 1\.png$/);
+        expect(vi.mocked(anchorDownload)).not.toHaveBeenCalled();
         expect(logs.some((l) => l.includes("1080p fit applied to 1 image"))).toBe(true);
         expect(result[0].images[0].width).toBe(1920);
     });
@@ -339,15 +343,49 @@ describe("file naming", () => {
         // makeItems prompts are "Prompt 1" — that exact text becomes the name.
         expect(calls[0][1]).toMatch(/^GenerateThroughFlow\d{6}\/Prompt 1\.png$/);
     });
+
+    it("confirms the full foldered path when Chrome honors it", async () => {
+        stubSuccess();
+        // Date-agnostic: build the absolute path from the same folder the
+        // run computes, so this test doesn't break when the day rolls over.
+        const folder = imageFolderName("");
+        const abs = `C:\\Users\\u\\Downloads\\${folder}\\Prompt 1.png`;
+        vi.mocked(bgDownload).mockResolvedValueOnce({ savedAs: abs });
+        const logs: string[] = [];
+
+        await drain(new FlowRunner(), makeItems(1), makeOpts({ folder: "" }), collector(logs));
+
+        expect(logs.some((l) => l.includes(`Saved as ${abs}`))).toBe(true);
+        expect(logs.some((l) => l.includes("Downloads ROOT"))).toBe(false);
+    });
+
+    it("flags a save Chrome dropped into the Downloads root instead of the folder", async () => {
+        stubSuccess();
+        // Right name, wrong place — basename-only comparison would call this
+        // a success, hiding exactly the bug the user reported.
+        vi.mocked(bgDownload).mockResolvedValueOnce({
+            savedAs: "C:\\Users\\u\\Downloads\\Prompt 1.png",
+        });
+        const logs: string[] = [];
+
+        const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ folder: "" }), collector(logs));
+
+        expect(result[0].status).toBe("done");
+        expect(logs.some((l) => l.includes("Downloads ROOT") && l.includes("GenerateThroughFlow"))).toBe(true);
+        expect(logs.some((l) => l.startsWith("Saved as "))).toBe(false);
+    });
 });
 
 describe("retry bookkeeping", () => {
     it("a failed attempt's images never leak into item.images — ZIP/modal see only the final attempt", async () => {
         stubSuccess();
         // Attempt 1 pulls its image (pushed into the local `images` array),
-        // then the save itself dies: the folder download errors and the flat
-        // anchor fallback throws. Attempt 2 saves cleanly.
-        vi.mocked(bgDownload).mockResolvedValueOnce({ error: "network down" });
+        // then BOTH folder attempts die: the URL download errors, the panel
+        // blob retry errors too, and the flat anchor fallback throws.
+        // Attempt 2 saves cleanly through the URL.
+        vi.mocked(bgDownload)
+            .mockResolvedValueOnce({ error: "network down" })
+            .mockResolvedValueOnce({ error: "network down" });
         vi.mocked(anchorDownload).mockImplementationOnce(() => {
             throw new Error("no anchor");
         });
@@ -364,7 +402,8 @@ describe("retry bookkeeping", () => {
         // pushed image must be gone. An accumulating implementation would
         // report 2 here — and the ZIP/modal read exactly this array.
         expect(result[0].images).toHaveLength(1);
-        expect(vi.mocked(bgDownload)).toHaveBeenCalledTimes(2);
+        // Attempt 1: URL fail + blob fail. Attempt 2: URL success.
+        expect(vi.mocked(bgDownload)).toHaveBeenCalledTimes(3);
         expect(vi.mocked(anchorDownload)).toHaveBeenCalledTimes(1);
     });
 

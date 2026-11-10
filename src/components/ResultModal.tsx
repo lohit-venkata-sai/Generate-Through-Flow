@@ -2,7 +2,7 @@ import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, X } fro
 import { useState } from "react";
 import { anchorDownload, bgDownload } from "../lib/downloads";
 import { useLockBodyScroll } from "../lib/useLockBodyScroll";
-import { imageFolderName, plannedName, planNames } from "../lib/naming";
+import { imageFolderName, plannedName, planNames, savedIntoFolder } from "../lib/naming";
 import type { AutomationPrefs, QueueItem } from "../types";
 
 interface ResultModalProps {
@@ -48,22 +48,31 @@ export function ResultModal({ items, itemIndex, imgIndex, prefs, imagesPerPrompt
         const plan = planNames(items, prefs, imagesPerPrompt);
         const name = plannedName(plan, item, safeImg, prefs);
         const wanted = `${imageFolderName(folderBase)}/${name}.png`;
+        const ok = (r: { savedAs?: string; error?: string }): boolean =>
+            !r.error && (!r.savedAs || savedIntoFolder(r.savedAs, wanted));
         try {
-            if (!img.altered) {
-                // Direct https URL + filename: Chrome honors the name AND the
-                // subfolder itself — no filename-suggest listener involved.
-                const res = await bgDownload(img.url, wanted);
-                if (!res.error) {
-                    setSaved(true);
-                    window.setTimeout(() => setSaved(false), 2000);
-                    return;
-                }
+            // Step 1: direct https URL + filename — Chrome applies name AND
+            // folder itself. Skipped for quality-fit bytes (the URL still
+            // serves the original image).
+            if (!img.altered && ok(await bgDownload(img.url, wanted))) {
+                setSaved(true);
+                window.setTimeout(() => setSaved(false), 2000);
+                return;
             }
-            // Quality-fit bytes (URL download would undo them) or the URL
-            // download failed: an anchor always honors the exact name —
-            // flat in the Downloads root, never a random blob name.
-            const src = img.preview || img.url;
-            anchorDownload(await (await fetch(src)).blob(), `${name}.png`);
+            // Step 2: the bytes we hold, as an extension blob — same folder
+            // path, so a failed or flat URL download still lands in-folder.
+            const blob = await (await fetch(img.preview || img.url)).blob();
+            const panelUrl = URL.createObjectURL(blob);
+            const res = await bgDownload(panelUrl, wanted);
+            setTimeout(() => URL.revokeObjectURL(panelUrl), 60_000);
+            if (ok(res)) {
+                setSaved(true);
+                window.setTimeout(() => setSaved(false), 2000);
+                return;
+            }
+            // Last resort: an anchor honors the exact name but can only
+            // write to the Downloads root — never a random blob name.
+            anchorDownload(blob, `${name}.png`);
             setSaved(true);
             window.setTimeout(() => setSaved(false), 2000);
         } catch { /* nothing worked — leave the button as-is */ }

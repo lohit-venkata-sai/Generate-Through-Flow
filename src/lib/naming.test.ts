@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     allocateName, buildBaseName, desiredBaseName, ddmmyy, imageFolderName,
-    plannedName, planNames, sanitizeFileName, zipFileName,
+    plannedName, planNames, sanitizeFileName, savedIntoFolder, zipFileName,
 } from "./naming";
 import { defaultPrefs } from "./store";
 import type { AutomationPrefs } from "../types";
@@ -156,5 +156,23 @@ describe("buildBaseName (compat surface)", () => {
     it("matches desiredBaseName for the same inputs", () => {
         expect(buildBaseName(0, "1-01", "ignored", prefs)).toBe("1-01");
         expect(buildBaseName(0, "", "A Red Sky!", prefs, "Scene 7")).toBe("Scene 7");
+    });
+});
+
+describe("savedIntoFolder", () => {
+    const wanted = "GenerateThroughFlow091126/1-01.png";
+
+    it("accepts an absolute path that ends with the wanted relative path", () => {
+        expect(savedIntoFolder("C:\\Users\\u\\Downloads\\GenerateThroughFlow091126\\1-01.png", wanted)).toBe(true);
+        expect(savedIntoFolder("/home/u/Downloads/GenerateThroughFlow091126/1-01.png", wanted)).toBe(true);
+    });
+
+    it("rejects a flat save in the Downloads root", () => {
+        expect(savedIntoFolder("C:\\Users\\u\\Downloads\\1-01.png", wanted)).toBe(false);
+        expect(savedIntoFolder("/home/u/Downloads/1-01.png", wanted)).toBe(false);
+    });
+
+    it("is not fooled by a different folder that shares the basename", () => {
+        expect(savedIntoFolder("/d/OtherFolder/1-01.png", wanted)).toBe(false);
     });
 });

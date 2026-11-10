@@ -8,7 +8,7 @@ import { bgDownload, anchorDownload } from "./downloads";
 import { buildCharIndex, extractTags, handleVariants, splitPromptParts, type CharIndex, type ResolvedRef } from "./flowRefs";
 import { FLOW_ASPECT_CODES, FLOW_MODEL_CODES, FLOW_RECAPTCHA_KEY, FLOW_TAB_URLS } from "./flowModels";
 import { FLOW_RPC, extractFlowImageUrls, mineAgentToken, resolveRpcid } from "./flowRpc";
-import { imageFolderName, plannedName, planNames } from "./naming";
+import { imageFolderName, plannedName, planNames, savedIntoFolder } from "./naming";
 import type { AutomationPrefs, GeneratedImage, ImageQuality, LogEntry, LogLevel, QueueItem, QueueStatus } from "../types";
 
 export { buildBaseName } from "./naming";
@@ -483,28 +483,32 @@ export class FlowRunner {
                         const name = plannedName(namePlan, item, n, opts.prefs);
                         const wanted = `${folder}/${name}.png`;
                         log("info", `Downloading image… (${name}.png)`);
-                        if (images[n].altered) {
-                            // 1080p/2K bytes exist only in the panel's preview;
-                            // the https URL still holds the ORIGINAL image, so
-                            // downloading it would silently undo the quality
-                            // step. Blob URLs can't take Chrome's `filename`
-                            // (and the suggest listener isn't applying names),
-                            // so save through an anchor — it always honors the
-                            // exact name, flat in the Downloads root.
-                            const src = images[n].preview || images[n].url;
+                        // Step 1: direct https URL + filename — Chrome applies
+                        // name AND subfolder itself. Skipped for quality-fit
+                        // images: the URL still serves the ORIGINAL bytes, so
+                        // downloading it would silently undo the fit.
+                        let dl: { savedAs?: string; error?: string } = {};
+                        if (!images[n].altered) dl = await bgDownload(images[n].url, wanted);
+                        // Step 2: the bytes we actually hold (preview or
+                        // quality-fit) as an extension blob, same folder path —
+                        // covers altered images AND a failed URL download, so
+                        // neither case has to drop to the flat root.
+                        if (images[n].altered || dl.error) {
                             try {
-                                anchorDownload(await (await fetch(src)).blob(), `${name}.png`);
+                                const src = images[n].preview || images[n].url;
+                                const blob = await (await fetch(src)).blob();
+                                const panelUrl = URL.createObjectURL(blob);
+                                dl = await bgDownload(panelUrl, wanted);
+                                // bgDownload resolves only at the download's
+                                // terminal state, so revoke safely after it.
+                                setTimeout(() => URL.revokeObjectURL(panelUrl), 60_000);
                             } catch {
-                                throw new Error("download failed: quality-fit bytes unavailable");
+                                dl = { error: dl.error || "image bytes unavailable" };
                             }
-                            log("info", `Saved ${name}.png (quality-fit bytes save to the Downloads folder root)`);
-                            continue;
                         }
-                        // Direct https URL + filename is the one path where
-                        // Chrome honors the name AND subfolders itself — no
-                        // dependence on the filename-suggest listener.
-                        const dl = await bgDownload(images[n].url, wanted);
                         if (dl.error) {
+                            // Last resort: an anchor honors the exact name but
+                            // can only write to the Downloads root.
                             log("error", `Folder save failed (${dl.error}) — saving flat…`);
                             try {
                                 const src = images[n].preview || images[n].url;
@@ -512,14 +516,14 @@ export class FlowRunner {
                             } catch {
                                 throw new Error(`download failed: ${dl.error}`);
                             }
+                        } else if (dl.savedAs && !savedIntoFolder(dl.savedAs, wanted)) {
+                            // Right name, wrong place: something rewrote the
+                            // path between our suggestion and the final file.
+                            log("error", `Chrome saved ${name}.png to the Downloads ROOT, not ${folder}/ — something is overriding our path (another extension's filename listener, or Chrome's "Ask where to save each file" setting).`);
                         } else if (dl.savedAs) {
-                            const savedBase = dl.savedAs.split(/[\\/]/).pop();
-                            const wantedBase = `${name}.png`;
-                            if (savedBase !== wantedBase) {
-                                log("error", `Chrome renamed the file to "${savedBase}" (wanted "${wantedBase}") — check for downloader/renamer extensions or Chrome's ask-where-to-save setting.`);
-                            } else {
-                                log("info", `Saved as ${dl.savedAs}`);
-                            }
+                            log("info", `Saved as ${dl.savedAs}`);
+                        } else {
+                            log("info", `Save started for ${name}.png (Chrome still placing it).`);
                         }
                     }
                     if (this.stopped) break;

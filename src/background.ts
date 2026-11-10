@@ -88,21 +88,94 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     });
 });
 
+// Track what Chrome ACTUALLY does with each download. chrome.downloads.download()
+// only reports "started" — the file can still be renamed or interrupted later
+// (expired URL, overwritten suggestion, "ask where to save"), and the panel
+// needs the real outcome to verify the folder path landed.
+const finalState = new Map<number, { filename?: string; error?: string }>();
+const waiters = new Map<number, (r: { filename?: string; error?: string }) => void>();
+
+function settle(id: number, rec: { filename?: string; error?: string }): void {
+    finalState.set(id, rec);
+    const resolve = waiters.get(id);
+    if (resolve) {
+        waiters.delete(id);
+        resolve(rec);
+    }
+}
+
+/** Resolve once Chrome reaches a terminal state (complete/interrupted) or the timeout hits. */
+function waitForDownload(id: number, timeoutMs: number): Promise<{ filename?: string; error?: string }> {
+    return new Promise((resolve) => {
+        const finish = (rec: { filename?: string; error?: string }): void => {
+            clearTimeout(timer);
+            resolve(rec);
+        };
+        const timer = setTimeout(() => {
+            waiters.delete(id);
+            // Best effort: report whatever Chrome knows right now.
+            chrome.downloads.search({ id }, (results) => {
+                const it = results?.[0];
+                if (!it) {
+                    resolve({ error: "download not found" });
+                    return;
+                }
+                resolve({
+                    filename: it.filename || undefined,
+                    error: it.error || (it.state === "interrupted" ? "interrupted" : undefined),
+                });
+            });
+        }, timeoutMs);
+        waiters.set(id, finish);
+        // Race guard: the download may have finished before the waiter existed.
+        chrome.downloads.search({ id }, (results) => {
+            const it = results?.[0];
+            if (!it) {
+                waiters.delete(id);
+                clearTimeout(timer);
+                resolve({ error: "download not found" });
+                return;
+            }
+            if (it.state === "complete" || it.state === "interrupted") {
+                const w = waiters.get(id);
+                if (w) {
+                    waiters.delete(id);
+                    w({ filename: it.filename || undefined, error: it.error || undefined });
+                }
+            }
+        });
+    });
+}
+
 // Drop per-download state once Chrome finishes — otherwise memById grows
 // for the whole browser session (Whisk does the same via onChanged).
 chrome.downloads.onChanged.addListener((delta) => {
     const state = delta.state?.current;
+    const id = delta.id;
     if (state === "complete" || state === "interrupted") {
-        const id = delta.id;
+        const rec = finalState.get(id) ?? {};
+        if (delta.filename?.current) rec.filename = delta.filename.current;
+        if (delta.error?.current) rec.error = delta.error.current;
+        settle(id, rec);
         memById.delete(id);
         sessWrite("i:" + id, null);
+        setTimeout(() => finalState.delete(id), 10 * 60_000);
+        return;
+    }
+    if (delta.filename?.current || delta.error?.current) {
+        const rec = finalState.get(id) ?? {};
+        if (delta.filename?.current) rec.filename = delta.filename.current;
+        if (delta.error?.current) rec.error = delta.error.current;
+        finalState.set(id, rec);
     }
 });
 
 // Central download service (background context).
 // Direct https URLs + explicit filename is the only combination Chrome
 // honors with subfolders — blob:/data: URLs get a generated name instead,
-// which is why the filename is re-suggested above.
+// which is why the filename is re-suggested above. The response waits for
+// the download's terminal state so the panel gets the REAL final path
+// (folder proof) or the REAL failure reason, never a false "started".
 chrome.runtime.onMessage.addListener((msg: DownloadRequest, _sender, sendResponse: (r: unknown) => void) => {
     if (!msg || msg.type !== "FP_DOWNLOAD") return false;
     rememberUrl(msg.url, msg.filename);
@@ -114,9 +187,12 @@ chrome.runtime.onMessage.addListener((msg: DownloadRequest, _sender, sendRespons
                 return;
             }
             rememberId(downloadId, msg.filename);
-            // Verify what Chrome actually saved (proves the name/folders applied).
-            chrome.downloads.search({ id: downloadId }, (results) => {
-                sendResponse({ id: downloadId, savedAs: results?.[0]?.filename || null });
+            void waitForDownload(downloadId, 30_000).then((final) => {
+                if (final.error) {
+                    sendResponse({ error: final.error });
+                    return;
+                }
+                sendResponse({ id: downloadId, savedAs: final.filename || null });
             });
         },
     );
