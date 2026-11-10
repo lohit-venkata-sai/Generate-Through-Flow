@@ -489,6 +489,11 @@ export class FlowRunner {
                         // downloading it would silently undo the fit.
                         let dl: { savedAs?: string; error?: string } = {};
                         if (!images[n].altered) dl = await bgDownload(images[n].url, wanted);
+                        if (dl.error) {
+                            // Name the URL failure BEFORE the retry — without
+                            // this line a fallback save hides its own cause.
+                            log("error", `Direct URL save failed (${dl.error}) — saving the held bytes instead…`);
+                        }
                         // Step 2: the bytes we actually hold (preview or
                         // quality-fit) as an extension blob, same folder path —
                         // covers altered images AND a failed URL download, so

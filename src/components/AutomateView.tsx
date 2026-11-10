@@ -44,9 +44,9 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
     );
     const [conn, setConn] = useState<string>("Checking Flow tab…");
     const [running, setRunning] = useState(false);
-    const [tab, setTab] = useState<"queue" | "logs">("queue");
     const [level, setLevel] = useState<"all" | LogLevel>("all");
     const [logsCopied, setLogsCopied] = useState(false);
+    const logEndRef = useRef<HTMLDivElement | null>(null);
     const [charIndex, setCharIndex] = useState<CharIndex>(new Map());
     const [modal, setModal] = useState<{ item: number; img: number } | null>(null);
     const [elapsed, setElapsed] = useState(0);
@@ -354,6 +354,11 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
         } catch { /* clipboard unavailable — ignore */ }
     };
 
+    // Keep the newest line in view while a run streams entries.
+    useEffect(() => {
+        logEndRef.current?.scrollIntoView({ block: "nearest" });
+    }, [filteredLogs.length]);
+
     return (
         <div className="flex flex-col gap-4">
             <section className="rounded-2xl border bg-card p-3 shadow-sm">
@@ -504,21 +509,7 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                 </section>
             )}
 
-            <div className="grid grid-cols-2 gap-1 rounded-2xl border bg-card p-1">
-                {(["queue", "logs"] as const).map((t) => (
-                    <button
-                        key={t}
-                        type="button"
-                        onClick={() => setTab(t)}
-                        aria-pressed={tab === t}
-                        className={`h-9 rounded-xl text-[13px] font-medium capitalize transition-colors ${tab === t ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                    >
-                        {t}{t === "queue" && displayItems.length > 0 && ` (${displayItems.length})`}
-                    </button>
-                ))}
-            </div>
-
-            {tab === "queue" ? (
+            <>
                 <section className="rounded-2xl border bg-card p-4 shadow-sm">
                     <div className="mb-2 flex items-center justify-between">
                         <h2 className="text-sm font-semibold">Queue{displayItems.length > 0 && <span className="ml-1.5 text-xs font-normal text-muted-foreground">({displayItems.length} prompts)</span>}</h2>
@@ -589,7 +580,6 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                         </button>
                     )}
                 </section>
-            ) : (
                 <section className="rounded-2xl border bg-card p-4 shadow-sm">
                     <div className="mb-2 flex items-center justify-between">
                         <h2 className="text-sm font-semibold">Logs</h2>
@@ -629,8 +619,9 @@ export function AutomateView({ formValues, prefs, setPrefs, items, setItems, log
                             </li>
                         ))}
                     </ul>
+                    <div ref={logEndRef} />
                 </section>
-            )}
+            </>
             {modal && (
                 <ResultModal
                     items={items}

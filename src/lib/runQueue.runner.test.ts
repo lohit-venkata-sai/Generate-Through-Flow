@@ -374,6 +374,23 @@ describe("file naming", () => {
         expect(logs.some((l) => l.includes("Downloads ROOT") && l.includes("GenerateThroughFlow"))).toBe(true);
         expect(logs.some((l) => l.startsWith("Saved as "))).toBe(false);
     });
+
+    it("says why the direct URL save failed before falling back to the held bytes", async () => {
+        stubSuccess();
+        // The fallback must not hide its own cause: without this log line a
+        // blob-retry save looks like the URL path worked all along.
+        vi.mocked(bgDownload).mockResolvedValueOnce({ error: "SERVER_FORBIDDEN" });
+        const logs: string[] = [];
+
+        const result = await drain(new FlowRunner(), makeItems(1), makeOpts({ folder: "" }), collector(logs));
+
+        expect(result[0].status).toBe("done");
+        expect(logs.some((l) => l.includes("Direct URL save failed (SERVER_FORBIDDEN)"))).toBe(true);
+        // Call 1 = URL (failed), call 2 = held-bytes blob (succeeded) — so no
+        // flat anchor fallback was needed.
+        expect(vi.mocked(bgDownload)).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(anchorDownload)).not.toHaveBeenCalled();
+    });
 });
 
 describe("retry bookkeeping", () => {
