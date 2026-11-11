@@ -67,25 +67,59 @@ async function findWanted(item: { id: number; url: string; finalUrl?: string }):
         ?? (item.finalUrl ? await sessRead("u:" + item.finalUrl) : undefined);
 }
 
-// Re-suggest our filename when Chrome derives its own (blob:/data: URLs get a
-// generated UUID name and the `filename` param is ignored for them). Relative
-// subfolders (GenerateThroughFlow/GTF_<date>/…) are honored here.
+// Bind a resolved name to the download id and drop the URL entry (the id is
+// the stable key from here on; redirects can change finalUrl).
+function bindWanted(item: { id: number; url: string; finalUrl?: string }, wanted: string): void {
+    rememberId(item.id, wanted);
+    forgetUrl(item.url);
+    if (item.finalUrl) forgetUrl(item.finalUrl);
+}
+
+// Chrome's contract (downloads.onDeterminingFilename): EVERY listener must call
+// suggest() EXACTLY ONCE — synchronously, or asynchronously ONLY if it returns
+// true. If it neither suggests synchronously nor returns true, Chrome calls
+// suggest() itself, immediately, with the tentative name — which is where the
+// folder went. The previous implementation suggested inside a promise callback
+// and returned undefined: Chrome auto-answered (flat, generated name) and our
+// late suggestion arrived second, against the exactly-once rule. Whisk Automator
+// (the reference extension) keeps this synchronous: map hit → suggest now, map
+// miss → no call, letting download()'s `filename` stand.
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     if (item.byExtensionId && item.byExtensionId !== chrome.runtime.id) {
+        // Another extension's download: hand straight back, never hijack it.
         suggest();
         return;
     }
-    // Async storage lookup is fine — suggest() may be called asynchronously.
-    void findWanted(item).then((wanted) => {
-        if (wanted) {
-            rememberId(item.id, wanted);
-            forgetUrl(item.url);
-            if (item.finalUrl) forgetUrl(item.finalUrl);
-            suggest({ filename: wanted, conflictAction: "uniquify" });
-        } else {
-            suggest();
-        }
-    });
+    // Synchronous fast path. rememberUrl() runs in the same message handler
+    // BEFORE chrome.downloads.download() is called, and rememberId() in its
+    // callback — so a live worker always knows the name before Chrome asks.
+    const wanted =
+        memById.get(item.id) ??
+        memPending.get(item.url) ??
+        (item.finalUrl ? memPending.get(item.finalUrl) : undefined);
+    if (wanted !== undefined) {
+        bindWanted(item, wanted);
+        suggest({ filename: wanted, conflictAction: "uniquify" });
+        return;
+    }
+    // Slow path: the worker restarted between download() and filename
+    // determination, so only chrome.storage.session still holds the name.
+    // Returning true tells Chrome to wait for our one and only suggest().
+    void findWanted(item)
+        .then((stored) => {
+            if (stored !== undefined) {
+                bindWanted(item, stored);
+                suggest({ filename: stored, conflictAction: "uniquify" });
+            } else {
+                // Nothing stored anywhere: defer to the name download()
+                // provided (or Chrome's own), instead of inventing one.
+                suggest();
+            }
+        })
+        // findWanted cannot reject (storage reads are guarded), but a download
+        // must never hang waiting on a listener that stops answering.
+        .catch(() => suggest());
+    return true;
 });
 
 // Track what Chrome ACTUALLY does with each download. chrome.downloads.download()
