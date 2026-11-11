@@ -172,6 +172,14 @@ describe("savedIntoFolder", () => {
         expect(savedIntoFolder("/home/u/Downloads/1-01.png", wanted)).toBe(false);
     });
 
+    it("accepts Chrome's uniquified repeat name inside the folder", () => {
+        // A second save of the same image becomes "1-01 (1).png" — still in
+        // the folder, so it must not be mistaken for a root save (that misread
+        // triggered a redundant second download).
+        expect(savedIntoFolder("C:\\Users\\u\\Downloads\\GenerateThroughFlow091126\\1-01 (1).png", wanted)).toBe(true);
+        expect(savedIntoFolder("/home/u/Downloads/GenerateThroughFlow091126/1-01 (1).png", wanted)).toBe(true);
+    });
+
     it("is not fooled by a different folder that shares the basename", () => {
         expect(savedIntoFolder("/d/OtherFolder/1-01.png", wanted)).toBe(false);
     });

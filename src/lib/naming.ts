@@ -142,12 +142,17 @@ export function plannedName(
 }
 
 /**
- * Did Chrome actually place the file INSIDE the requested folder? Compares
- * the absolute path it reports against the relative path we asked for —
+ * Did Chrome actually place the file INSIDE the requested folder? Compares the
+ * folder part of the requested path against the absolute path it reports:
  * basename-only comparison can't tell "folder/1-01.png" from a flat
- * "Downloads/1-01.png".
+ * "Downloads/1-01.png". Requiring the exact basename would be too strict
+ * though — Chrome's uniquify writes "folder/1-01 (1).png" on a repeat save,
+ * which is inside the folder and must not be mistaken for a root save (that
+ * misread used to trigger a second, redundant download).
  */
 export function savedIntoFolder(savedAs: string, wanted: string): boolean {
     const norm = savedAs.replace(/\\/g, "/");
-    return norm === wanted || norm.endsWith(`/${wanted}`);
+    const folder = wanted.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+    if (!folder) return true; // nothing requested outside the root
+    return norm.startsWith(`${folder}/`) || norm.includes(`/${folder}/`);
 }

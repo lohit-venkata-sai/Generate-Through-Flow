@@ -4,11 +4,11 @@
 // user Stop (or stopOnError). Emits timestamped logs for the Logs view.
 
 import { flowAbort, flowAgentPost, flowBatchExecute, flowGetProjectId, flowGetRecaptcha, flowGetToken, flowImageArtifacts, flowListWorkflows, flowRevokeUrl, flowScrapeLibrary, flowThumb, flowB64ToBlobUrl, flowResizeArt } from "./flowPage";
-import { bgDownload, anchorDownload } from "./downloads";
+import { saveImage } from "./saveImage";
 import { buildCharIndex, extractTags, handleVariants, splitPromptParts, type CharIndex, type ResolvedRef } from "./flowRefs";
 import { FLOW_ASPECT_CODES, FLOW_MODEL_CODES, FLOW_RECAPTCHA_KEY, FLOW_TAB_URLS } from "./flowModels";
 import { FLOW_RPC, extractFlowImageUrls, mineAgentToken, resolveRpcid } from "./flowRpc";
-import { imageFolderName, plannedName, planNames, savedIntoFolder } from "./naming";
+import { imageFolderName, plannedName, planNames } from "./naming";
 import type { AutomationPrefs, GeneratedImage, ImageQuality, LogEntry, LogLevel, QueueItem, QueueStatus } from "../types";
 
 export { buildBaseName } from "./naming";
@@ -483,52 +483,27 @@ export class FlowRunner {
                         const name = plannedName(namePlan, item, n, opts.prefs);
                         const wanted = `${folder}/${name}.png`;
                         log("info", `Downloading image… (${name}.png)`);
-                        // Step 1: direct https URL + filename — Chrome applies
-                        // name AND subfolder itself. Skipped for quality-fit
-                        // images: the URL still serves the ORIGINAL bytes, so
-                        // downloading it would silently undo the fit.
-                        let dl: { savedAs?: string; error?: string } = {};
-                        if (!images[n].altered) dl = await bgDownload(images[n].url, wanted);
-                        if (dl.error) {
-                            // Name the URL failure BEFORE the retry — without
-                            // this line a fallback save hides its own cause.
-                            log("error", `Direct URL save failed (${dl.error}) — saving the held bytes instead…`);
-                        }
-                        // Step 2: the bytes we actually hold (preview or
-                        // quality-fit) as an extension blob, same folder path —
-                        // covers altered images AND a failed URL download, so
-                        // neither case has to drop to the flat root.
-                        if (images[n].altered || dl.error) {
-                            try {
-                                const src = images[n].preview || images[n].url;
-                                const blob = await (await fetch(src)).blob();
-                                const panelUrl = URL.createObjectURL(blob);
-                                dl = await bgDownload(panelUrl, wanted);
-                                // bgDownload resolves only at the download's
-                                // terminal state, so revoke safely after it.
-                                setTimeout(() => URL.revokeObjectURL(panelUrl), 60_000);
-                            } catch {
-                                dl = { error: dl.error || "image bytes unavailable" };
-                            }
-                        }
-                        if (dl.error) {
-                            // Last resort: an anchor honors the exact name but
-                            // can only write to the Downloads root.
-                            log("error", `Folder save failed (${dl.error}) — saving flat…`);
-                            try {
-                                const src = images[n].preview || images[n].url;
-                                anchorDownload(await (await fetch(src)).blob(), `${name}.png`);
-                            } catch {
-                                throw new Error(`download failed: ${dl.error}`);
-                            }
-                        } else if (dl.savedAs && !savedIntoFolder(dl.savedAs, wanted)) {
-                            // Right name, wrong place: something rewrote the
-                            // path between our suggestion and the final file.
-                            log("error", `Chrome saved ${name}.png to the Downloads ROOT, not ${folder}/ — something is overriding our path (another extension's filename listener, or Chrome's "Ask where to save each file" setting).`);
-                        } else if (dl.savedAs) {
-                            log("info", `Saved as ${dl.savedAs}`);
-                        } else {
-                            log("info", `Save started for ${name}.png (Chrome still placing it).`);
+                        // One shared chain (saveImage.ts): every step only
+                        // runs when the previous one genuinely failed to write
+                        // a file, so one save action = at most one download.
+                        const res = await saveImage({
+                            url: images[n].url,
+                            preview: images[n].preview,
+                            altered: !!images[n].altered,
+                            wanted,
+                            flatName: `${name}.png`,
+                            onEvent: (e) => {
+                                if (e.type === "url-failed") log("error", `Direct URL save failed (${e.detail}) — saving the held bytes instead…`);
+                                else if (e.type === "bytes-failed") log("error", `Folder save failed (${e.detail}) — saving flat…`);
+                                else if (e.type === "flat") log("error", `Chrome saved ${name}.png to the Downloads ROOT, not ${folder}/ — something is overriding our path (another extension's filename listener, or Chrome's "Ask where to save each file" setting).`);
+                                else if (e.type === "saved") log("info", `Saved as ${e.detail}`);
+                                else log("info", `Save started for ${name}.png (Chrome still placing it).`);
+                            },
+                        });
+                        if (res.anchorFailed) {
+                            // Nothing was written at all — fail the attempt so
+                            // the retry logic takes over.
+                            throw new Error(`download failed: ${res.error}`);
                         }
                     }
                     if (this.stopped) break;
@@ -670,6 +645,12 @@ export class FlowRunner {
         }
 
         log("info", `Starting ${state.length} prompts on ${opts.model} (${parallel} at a time${bufferMs ? `, ${bufferMs / 1000}s buffer` : ""}${opts.quality && opts.quality !== "standard" ? `, ${opts.quality}` : ""})…`);
+        if (!opts.prefs.autoSave) {
+            // Without this line an auto-save-off run looks identical to a
+            // broken one: prompts generate, nothing is written, no folder
+            // ever appears, and the log shows no save lines at all.
+            log("info", "Auto-save is OFF — no files will be written during this run. Turn ON \"Auto save images\" in Settings to write images into the dated folder.");
+        }
 
         let cursor = 0;
         // Shared across workers: throttleUntil pauses all launches after a

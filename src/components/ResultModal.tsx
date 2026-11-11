@@ -1,8 +1,8 @@
 import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, X } from "lucide-react";
 import { useState } from "react";
-import { anchorDownload, bgDownload } from "../lib/downloads";
 import { useLockBodyScroll } from "../lib/useLockBodyScroll";
-import { imageFolderName, plannedName, planNames, savedIntoFolder } from "../lib/naming";
+import { imageFolderName, plannedName, planNames } from "../lib/naming";
+import { saveImage } from "../lib/saveImage";
 import type { AutomationPrefs, QueueItem } from "../types";
 
 interface ResultModalProps {
@@ -19,7 +19,11 @@ interface ResultModalProps {
 
 export function ResultModal({ items, itemIndex, imgIndex, prefs, imagesPerPrompt, folderBase, onNavigate, onClose }: ResultModalProps) {
     const [copied, setCopied] = useState(false);
-    const [saved, setSaved] = useState(false);
+    // null = idle; otherwise the label to show ("Saved" / "Saved · root").
+    const [saved, setSaved] = useState<string | null>(null);
+    // Guards against a second click starting a SECOND chain mid-flight —
+    // that alone could double every download.
+    const [busy, setBusy] = useState(false);
     useLockBodyScroll();
     const withImages = items.filter((i) => i.images.length > 0);
     const pos = withImages.findIndex((i) => i.index === itemIndex);
@@ -42,40 +46,30 @@ export function ResultModal({ items, itemIndex, imgIndex, prefs, imagesPerPrompt
     };
 
     const download = async () => {
-        if (!img || !item) return;
-        // Same planner the run used, so this saves the exact name the queue
-        // and the ZIP use for this image (1-01.png, 1-01(1).png, …).
-        const plan = planNames(items, prefs, imagesPerPrompt);
-        const name = plannedName(plan, item, safeImg, prefs);
-        const wanted = `${imageFolderName(folderBase)}/${name}.png`;
-        const ok = (r: { savedAs?: string; error?: string }): boolean =>
-            !r.error && (!r.savedAs || savedIntoFolder(r.savedAs, wanted));
+        if (!img || !item || busy) return;
+        setBusy(true);
         try {
-            // Step 1: direct https URL + filename — Chrome applies name AND
-            // folder itself. Skipped for quality-fit bytes (the URL still
-            // serves the original image).
-            if (!img.altered && ok(await bgDownload(img.url, wanted))) {
-                setSaved(true);
-                window.setTimeout(() => setSaved(false), 2000);
-                return;
-            }
-            // Step 2: the bytes we hold, as an extension blob — same folder
-            // path, so a failed or flat URL download still lands in-folder.
-            const blob = await (await fetch(img.preview || img.url)).blob();
-            const panelUrl = URL.createObjectURL(blob);
-            const res = await bgDownload(panelUrl, wanted);
-            setTimeout(() => URL.revokeObjectURL(panelUrl), 60_000);
-            if (ok(res)) {
-                setSaved(true);
-                window.setTimeout(() => setSaved(false), 2000);
-                return;
-            }
-            // Last resort: an anchor honors the exact name but can only
-            // write to the Downloads root — never a random blob name.
-            anchorDownload(blob, `${name}.png`);
-            setSaved(true);
-            window.setTimeout(() => setSaved(false), 2000);
+            // Same planner the run used, so this saves the exact name the queue
+            // and the ZIP use (1-01.png, 1-01(1).png, …).
+            const plan = planNames(items, prefs, imagesPerPrompt);
+            const name = plannedName(plan, item, safeImg, prefs);
+            const wanted = `${imageFolderName(folderBase)}/${name}.png`;
+            // ONE file per click: saveImage only falls back when a step
+            // genuinely failed to write anything. A completed download that
+            // landed outside the folder is reported here, not re-fired —
+            // retrying used to make this button produce three popups.
+            const res = await saveImage({
+                url: img.url,
+                preview: img.preview,
+                altered: !!img.altered,
+                wanted,
+                flatName: `${name}.png`,
+            });
+            if (res.anchorFailed) return; // nothing was written — leave as-is
+            setSaved(res.flat ? "Saved · root" : "Saved");
+            window.setTimeout(() => setSaved(null), res.flat ? 4000 : 2000);
         } catch { /* nothing worked — leave the button as-is */ }
+        finally { setBusy(false); }
     };
 
     const copyImage = async () => {
@@ -138,9 +132,14 @@ export function ResultModal({ items, itemIndex, imgIndex, prefs, imagesPerPrompt
                             <ExternalLink className="size-3.5" />
                             Open
                         </a>
-                        <button type="button" onClick={download} className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border text-xs font-medium hover:bg-accent">
+                        <button
+                            type="button"
+                            onClick={download}
+                            disabled={busy}
+                            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-xl border text-xs font-medium hover:bg-accent disabled:opacity-45"
+                        >
                             <Download className="size-3.5" />
-                            {saved ? "Saved" : "Download"}
+                            {saved ?? "Download"}
                         </button>
                         <button
                             type="button"

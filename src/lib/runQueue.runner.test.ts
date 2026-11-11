@@ -391,6 +391,26 @@ describe("file naming", () => {
         expect(vi.mocked(bgDownload)).toHaveBeenCalledTimes(2);
         expect(vi.mocked(anchorDownload)).not.toHaveBeenCalled();
     });
+
+    it("says so up front when auto-save is off instead of silently writing nothing", async () => {
+        stubSuccess();
+        const logs: string[] = [];
+
+        const result = await drain(
+            new FlowRunner(),
+            makeItems(1),
+            makeOpts({ prefs: { ...defaultPrefs, autoSave: false, parallel: 1, bufferSec: 0 } }),
+            collector(logs),
+        );
+
+        // Generation still succeeds, but nothing touches disk — and the log
+        // must say why. An auto-save-off run used to look exactly like a
+        // broken save: prompts done, zero download lines, no folder ever.
+        expect(result[0].status).toBe("done");
+        expect(vi.mocked(bgDownload)).not.toHaveBeenCalled();
+        expect(vi.mocked(anchorDownload)).not.toHaveBeenCalled();
+        expect(logs.some((l) => l.includes("Auto-save is OFF"))).toBe(true);
+    });
 });
 
 describe("retry bookkeeping", () => {
